@@ -5,8 +5,8 @@ services:
     image: neo4j:5.14-community
     container_name: multiagent-neo4j-dev
     ports:
-      - "7687:7687"
-      - "7474:7474"
+      - "7688:7687"
+      - "7475:7474"
     environment:
       - NEO4J_AUTH=${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-password}
       - NEO4J_dbms_security_procedures_unrestricted=apoc.*

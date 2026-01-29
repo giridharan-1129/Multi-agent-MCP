@@ -29,9 +29,9 @@ logger = get_logger(__name__)
 class AnalyzeFunctionTool(MCPTool):
     """Tool to analyze a function."""
 
-    name: str = "analyze_function"
-    description: str = "Analyze a function and provide insights"
-    category: str = "analysis"
+    name = "analyze_function"
+    description = "Analyze a function and provide insights"
+    category = "analysis"
 
     async def execute(
         self,
@@ -133,9 +133,9 @@ class AnalyzeFunctionTool(MCPTool):
 class AnalyzeClassTool(MCPTool):
     """Tool to analyze a class."""
 
-    name: str = "analyze_class"
-    description: str = "Analyze a class and provide insights"
-    category: str = "analysis"
+    name = "analyze_class"
+    description = "Analyze a class and provide insights"
+    category = "analysis"
 
     async def execute(
         self,
@@ -235,9 +235,9 @@ class AnalyzeClassTool(MCPTool):
 class FindPatternsTool(MCPTool):
     """Tool to find design patterns in code."""
 
-    name: str = "find_patterns"
-    description: str = "Detect design patterns in the codebase"
-    category: str = "analysis"
+    name = "find_patterns"
+    description = "Detect design patterns in the codebase"
+    category = "analysis"
 
     async def execute(self, pattern_type: Optional[str] = None) -> ToolResult:
         """
@@ -338,9 +338,9 @@ class FindPatternsTool(MCPTool):
 class CompareImplementationsTool(MCPTool):
     """Tool to compare two implementations."""
 
-    name: str = "compare_implementations"
-    description: str = "Compare two code implementations"
-    category: str = "analysis"
+    name = "compare_implementations"
+    description = "Compare two code implementations"
+    category = "analysis"
 
     async def execute(
         self,
@@ -448,8 +448,8 @@ class CodeAnalystAgent(BaseAgent):
     - Comparing implementations
     """
 
-    name: str = "code_analyst"
-    description: str = "Analyzes code patterns and provides insights"
+    name = "code_analyst"
+    description = "Analyzes code patterns and provides insights"
     version = "1.0.0"
 
     def __init__(self):

@@ -35,9 +35,9 @@ logger = get_logger(__name__)
 class IndexRepositoryTool(MCPTool):
     """Tool to index an entire repository."""
 
-    name: str = "index_repository"
-    description: str = "Index a GitHub repository into the knowledge graph"
-    category: str = "indexing"
+    name = "index_repository"
+    description = "Index a GitHub repository into the knowledge graph"
+    category = "indexing"
 
     async def execute(
         self,
@@ -205,9 +205,9 @@ class IndexRepositoryTool(MCPTool):
 class GetIndexStatusTool(MCPTool):
     """Tool to get indexing status."""
 
-    name: str = "get_index_status"
-    description: str = "Get statistics about the indexed knowledge graph"
-    category: str = "indexing"
+    name = "get_index_status"
+    description = "Get statistics about the indexed knowledge graph"
+    category = "indexing"
 
     async def execute(self) -> ToolResult:
         """
@@ -245,9 +245,9 @@ class GetIndexStatusTool(MCPTool):
 class ClearIndexTool(MCPTool):
     """Tool to clear the knowledge graph."""
 
-    name: str = "clear_index"
-    description: str = "Clear all data from the knowledge graph (WARNING: destructive)"
-    category: str = "indexing"
+    name = "clear_index"
+    description = "Clear all data from the knowledge graph (WARNING: destructive)"
+    category = "indexing"
 
     async def execute(self) -> ToolResult:
         """
@@ -296,8 +296,8 @@ class IndexerAgent(BaseAgent):
     - Clearing index
     """
 
-    name: str = "indexer"
-    description: str = "Indexes GitHub repositories into the knowledge graph"
+    name = "indexer"
+    description = "Indexes GitHub repositories into the knowledge graph"
     version = "1.0.0"
 
     def __init__(self):

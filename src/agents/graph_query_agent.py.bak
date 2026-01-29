@@ -29,9 +29,9 @@ logger = get_logger(__name__)
 class FindEntityTool(MCPTool):
     """Tool to find entities in the knowledge graph."""
 
-    name: str = "find_entity"
-    description: str = "Find a class, function, or module by name"
-    category: str = "query"
+    name = "find_entity"
+    description = "Find a class, function, or module by name"
+    category = "query"
 
     async def execute(
         self,
@@ -98,9 +98,9 @@ class FindEntityTool(MCPTool):
 class GetDependenciesTool(MCPTool):
     """Tool to get dependencies of an entity."""
 
-    name: str = "get_dependencies"
-    description: str = "Find all entities that a given entity depends on"
-    category: str = "query"
+    name = "get_dependencies"
+    description = "Find all entities that a given entity depends on"
+    category = "query"
 
     async def execute(self, name: str) -> ToolResult:
         """
@@ -153,9 +153,9 @@ class GetDependenciesTool(MCPTool):
 class GetDependentsTool(MCPTool):
     """Tool to get entities that depend on a given entity."""
 
-    name: str = "get_dependents"
-    description: str = "Find all entities that depend on a given entity"
-    category: str = "query"
+    name = "get_dependents"
+    description = "Find all entities that depend on a given entity"
+    category = "query"
 
     async def execute(self, name: str) -> ToolResult:
         """
@@ -208,9 +208,9 @@ class GetDependentsTool(MCPTool):
 class ExecuteQueryTool(MCPTool):
     """Tool to execute custom Cypher queries."""
 
-    name: str = "execute_query"
-    description: str = "Execute a custom Cypher query against the knowledge graph"
-    category: str = "query"
+    name = "execute_query"
+    description = "Execute a custom Cypher query against the knowledge graph"
+    category = "query"
 
     async def execute(
         self,
@@ -274,9 +274,9 @@ class ExecuteQueryTool(MCPTool):
 class SearchEntitiesTool(MCPTool):
     """Tool to search for entities by pattern."""
 
-    name: str = "search_entities"
-    description: str = "Search for entities matching a pattern"
-    category: str = "query"
+    name = "search_entities"
+    description = "Search for entities matching a pattern"
+    category = "query"
 
     async def execute(
         self,
@@ -357,9 +357,9 @@ class SearchEntitiesTool(MCPTool):
 class GetRelationshipsTool(MCPTool):
     """Tool to get relationships between entities."""
 
-    name: str = "get_relationships"
-    description: str = "Find relationships between two entities"
-    category: str = "query"
+    name = "get_relationships"
+    description = "Find relationships between two entities"
+    category = "query"
 
     async def execute(
         self,
@@ -471,8 +471,8 @@ class GraphQueryAgent(BaseAgent):
     - Getting relationships
     """
 
-    name: str = "graph_query"
-    description: str = "Queries the knowledge graph for entities and relationships"
+    name = "graph_query"
+    description = "Queries the knowledge graph for entities and relationships"
     version = "1.0.0"
 
     def __init__(self):

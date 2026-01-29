@@ -40,7 +40,7 @@ class AnalyzeQueryTool(MCPTool):
     name: str = "analyze_query"
     description: str = "Analyze a user query to determine intent and required agents"
 
-    category: str = "orchestration"
+    category = "orchestration"
 
     async def execute(
         self,
@@ -151,9 +151,9 @@ class AnalyzeQueryTool(MCPTool):
 class CreateConversationTool(MCPTool):
     """Tool to create a new conversation session."""
 
-    name: str = "create_conversation"
-    description: str = "Create a new conversation session"
-    category: str = "orchestration"
+    name = "create_conversation"
+    description = "Create a new conversation session"
+    category = "orchestration"
 
     # In-memory conversation storage (would use database in production)
     conversations: Dict[str, ConversationContext] = {}
@@ -223,9 +223,9 @@ class CreateConversationTool(MCPTool):
 class GetConversationContextTool(MCPTool):
     """Tool to get conversation context."""
 
-    name: str = "get_conversation_context"
-    description: str = "Get conversation history and context"
-    category: str = "orchestration"
+    name = "get_conversation_context"
+    description = "Get conversation history and context"
+    category = "orchestration"
 
     # Reference to conversations (would be shared state in production)
     conversations: Dict[str, ConversationContext] = {}
@@ -287,9 +287,9 @@ class GetConversationContextTool(MCPTool):
 class AddConversationMessageTool(MCPTool):
     """Tool to add message to conversation."""
 
-    name: str = "add_conversation_message"
-    description: str = "Add a message to the conversation history"
-    category: str = "orchestration"
+    name = "add_conversation_message"
+    description = "Add a message to the conversation history"
+    category = "orchestration"
 
     conversations: Dict[str, ConversationContext] = {}
 
@@ -394,9 +394,9 @@ class AddConversationMessageTool(MCPTool):
 class SynthesizeResponseTool(MCPTool):
     """Tool to synthesize response from multiple agent outputs."""
 
-    name: str = "synthesize_response"
-    description: str = "Combine outputs from multiple agents into a coherent response"
-    category: str = "orchestration"
+    name = "synthesize_response"
+    description = "Combine outputs from multiple agents into a coherent response"
+    category = "orchestration"
 
     async def execute(
         self,
@@ -495,8 +495,8 @@ class OrchestratorAgent(BaseAgent):
     - Synthesizing responses
     """
 
-    name: str = "orchestrator"
-    description: str = "Central coordinator for the multi-agent system"
+    name = "orchestrator"
+    description = "Central coordinator for the multi-agent system"
     version = "1.0.0"
 
     def __init__(self):
