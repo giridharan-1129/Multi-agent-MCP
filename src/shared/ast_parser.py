@@ -1,0 +1,297 @@
+"""
+AST Parser Service.
+
+WHAT: Parse Python files and extract code structure
+WHY: Need to understand classes, functions, decorators, imports
+HOW: Use Python's ast module to walk the syntax tree
+
+Example:
+    parser = ASTParser()
+    entities = parser.parse_file("fastapi/main.py")
+    for entity in entities:
+        print(f"{entity['type']}: {entity['name']}")
+"""
+
+import ast
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
+from .exceptions import FileParsingError
+from .logger import get_logger
+
+logger = get_logger(__name__)
+
+
+class ASTParser:
+    """
+    Parse Python files using Abstract Syntax Tree.
+
+    Extracts classes, functions, imports, decorators, and docstrings
+    from Python source code.
+
+    Attributes:
+        current_file: Currently parsing file path
+        current_module_imports: Imports in current file
+    """
+
+    def __init__(self):
+        """Initialize AST parser."""
+        self.current_file: Optional[str] = None
+        self.current_module_imports: Set[str] = set()
+        logger.debug("ASTParser initialized")
+
+    def parse_file(self, file_path: str) -> List[Dict[str, Any]]:
+        """
+        Parse a Python file and extract entities.
+
+        Args:
+            file_path: Path to Python file
+
+        Returns:
+            List of extracted entities (classes, functions, etc.)
+
+        Raises:
+            FileParsingError: If parsing fails
+        """
+        self.current_file = file_path
+        self.current_module_imports = set()
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            tree = ast.parse(content, filename=file_path)
+            entities = self._walk_tree(tree)
+
+            logger.info(
+                "File parsed successfully",
+                file=file_path,
+                entities_found=len(entities),
+            )
+            return entities
+
+        except SyntaxError as e:
+            logger.error(
+                "Syntax error in file",
+                file=file_path,
+                line=e.lineno,
+                error=str(e),
+            )
+            raise FileParsingError(
+                file_path=file_path,
+                error_detail=f"Syntax error at line {e.lineno}: {e.msg}",
+            )
+        except (OSError, UnicodeDecodeError) as e:
+            logger.error("Failed to read file", file=file_path, error=str(e))
+            raise FileParsingError(
+                file_path=file_path,
+                error_detail=str(e),
+            )
+
+    def _walk_tree(self, tree: ast.AST) -> List[Dict[str, Any]]:
+        """
+        Walk AST tree and extract entities.
+
+        Args:
+            tree: AST tree
+
+        Returns:
+            List of entities
+        """
+        entities = []
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                self._handle_import_from(node)
+            elif isinstance(node, ast.Import):
+                self._handle_import(node)
+            elif isinstance(node, ast.ClassDef):
+                entity = self._handle_class(node)
+                entities.append(entity)
+            elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+                entity = self._handle_function(node)
+                entities.append(entity)
+
+        return entities
+
+    def _handle_import(self, node: ast.Import) -> None:
+        """Handle import statement."""
+        for alias in node.names:
+            module_name = alias.name
+            self.current_module_imports.add(module_name)
+
+    def _handle_import_from(self, node: ast.ImportFrom) -> None:
+        """Handle from...import statement."""
+        if node.module:
+            self.current_module_imports.add(node.module)
+
+    def _handle_class(self, node: ast.ClassDef) -> Dict[str, Any]:
+        """
+        Handle ClassDef node.
+
+        Args:
+            node: ClassDef AST node
+
+        Returns:
+            Class entity dictionary
+        """
+        docstring = ast.get_docstring(node)
+        bases = [self._get_name(base) for base in node.bases]
+
+        # Extract methods
+        methods = []
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                methods.append(self._get_name(item))
+
+        entity = {
+            "type": "Class",
+            "name": node.name,
+            "module": self.current_file,
+            "line_number": node.lineno,
+            "docstring": docstring,
+            "bases": bases,
+            "methods": methods,
+            "decorators": self._get_decorators(node),
+        }
+
+        logger.debug("Class extracted", name=node.name, methods=len(methods))
+        return entity
+
+    def _handle_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> Dict[str, Any]:
+        """
+        Handle FunctionDef or AsyncFunctionDef node.
+
+        Args:
+            node: FunctionDef or AsyncFunctionDef AST node
+
+        Returns:
+            Function entity dictionary
+        """
+        docstring = ast.get_docstring(node)
+        is_async = isinstance(node, ast.AsyncFunctionDef)
+
+        # Extract parameters
+        params = []
+        for arg in node.args.args:
+            params.append(arg.arg)
+
+        # Extract returns annotation
+        returns = None
+        if node.returns:
+            returns = ast.unparse(node.returns)
+
+        entity = {
+            "type": "Function",
+            "name": node.name,
+            "module": self.current_file,
+            "line_number": node.lineno,
+            "docstring": docstring,
+            "parameters": params,
+            "returns": returns,
+            "is_async": is_async,
+            "decorators": self._get_decorators(node),
+        }
+
+        logger.debug("Function extracted", name=node.name, is_async=is_async)
+        return entity
+
+    def _get_decorators(self, node: ast.AST) -> List[str]:
+        """
+        Get decorators from a node.
+
+        Args:
+            node: AST node with decorator_list
+
+        Returns:
+            List of decorator names
+        """
+        decorators = []
+        if hasattr(node, "decorator_list"):
+            for decorator in node.decorator_list:
+                decorator_name = ast.unparse(decorator)
+                decorators.append(decorator_name)
+        return decorators
+
+    def _get_name(self, node: ast.AST) -> str:
+        """
+        Get name from various AST node types.
+
+        Args:
+            node: AST node
+
+        Returns:
+            Name string
+        """
+        if isinstance(node, ast.Name):
+            return node.id
+        elif isinstance(node, ast.Attribute):
+            return ast.unparse(node)
+        elif isinstance(node, ast.Constant):
+            return str(node.value)
+        else:
+            return ast.unparse(node)
+
+    def extract_imports(self, entities: List[Dict[str, Any]]) -> Set[str]:
+        """
+        Extract all imports from entities.
+
+        Args:
+            entities: List of parsed entities
+
+        Returns:
+            Set of import modules
+        """
+        return self.current_module_imports
+
+    def get_entity_by_name(
+        self,
+        name: str,
+        entities: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find entity by name.
+
+        Args:
+            name: Entity name to find
+            entities: List of entities to search
+
+        Returns:
+            Entity if found, None otherwise
+        """
+        for entity in entities:
+            if entity.get("name") == name:
+                return entity
+        return None
+
+
+# Global parser instance
+ast_parser: Optional[ASTParser] = None
+
+
+def init_parser() -> ASTParser:
+    """
+    Initialize AST parser.
+
+    Returns:
+        ASTParser instance
+    """
+    global ast_parser
+    ast_parser = ASTParser()
+    return ast_parser
+
+
+def get_parser() -> ASTParser:
+    """
+    Get initialized parser.
+
+    Returns:
+        ASTParser instance
+    """
+    global ast_parser
+    if not ast_parser:
+        ast_parser = ASTParser()
+    return ast_parser
