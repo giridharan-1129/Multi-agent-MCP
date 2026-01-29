@@ -130,19 +130,43 @@ class IndexRepositoryTool(MCPTool):
                         )
                 except Exception as e:
                     logger.error("Error storing entity", entity=entity["name"], error=str(e))
+                # Build entity lookup for module resolution
+                entity_lookup = {
+                    (e["name"], e.get("type")): e.get("module")
+                    for e in all_entities
+                }
 
             # Store relationships
             logger.info("Storing relationships in Neo4j", count=len(all_relationships))
             for rel in all_relationships:
                 try:
+                    source_module = rel.get("source_module")
+                    target_module = rel.get("target_module")
+
+                    # Resolve target module if missing
+                    if target_module is None:
+                        target_module = entity_lookup.get(
+                            (rel["target"], "Class")
+                        ) or entity_lookup.get(
+                            (rel["target"], "Function")
+                        )
+
+                    # Skip if we still can’t resolve
+                    if not source_module or not target_module:
+                        continue
+
                     await neo4j.create_relationship(
                         source_name=rel["source"],
+                        source_module=source_module,
                         target_name=rel["target"],
+                        target_module=target_module,
                         rel_type=rel["type"],
                         properties={"line_number": rel.get("line_number")},
                     )
+
                 except Exception as e:
-                    logger.warning("Error storing relationship", relationship=rel, error=str(e))
+                    logger.warning("Failed to store relationship", rel=rel, error=str(e))
+
 
             # Get final statistics
             stats = await neo4j.get_graph_statistics()

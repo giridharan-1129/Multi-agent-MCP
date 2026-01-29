@@ -97,11 +97,14 @@ class RelationshipBuilder:
                     class_name = base.split(".")[-1] if "." in base else base
 
                     relationship = {
-                        "source": entity["name"],
-                        "target": class_name,
-                        "type": "INHERITS_FROM",
-                        "line_number": entity.get("line_number"),
-                    }
+                            "source": entity["name"],
+                            "source_module": entity.get("module"),
+                            "target": class_name,
+                            "target_module": None,  # resolved later
+                            "type": "INHERITS_FROM",
+                            "line_number": entity.get("line_number"),
+                        }
+
                     relationships.append(relationship)
 
                     logger.debug(

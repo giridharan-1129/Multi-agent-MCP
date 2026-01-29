@@ -89,30 +89,45 @@ class ASTParser:
             )
 
     def _walk_tree(self, tree: ast.AST) -> List[Dict[str, Any]]:
-        """
-        Walk AST tree and extract entities.
-
-        Args:
-            tree: AST tree
-
-        Returns:
-            List of entities
-        """
         entities = []
 
-        for node in ast.walk(tree):
+        for node in tree.body:
             if isinstance(node, ast.ImportFrom):
                 self._handle_import_from(node)
+
             elif isinstance(node, ast.Import):
                 self._handle_import(node)
+
             elif isinstance(node, ast.ClassDef):
-                entity = self._handle_class(node)
-                entities.append(entity)
-            elif isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+                entities.extend(self._handle_class_with_context(node))
+
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 entity = self._handle_function(node)
+                entity["parent_class"] = None
                 entities.append(entity)
 
         return entities
+        
+    def _handle_class_with_context(self, node: ast.ClassDef) -> List[Dict[str, Any]]:
+        entities = []
+
+        # Push class context
+        self.class_stack.append(node.name)
+
+        class_entity = self._handle_class(node)
+        entities.append(class_entity)
+
+        for item in node.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                func = self._handle_function(item)
+                func["parent_class"] = node.name
+                entities.append(func)
+
+        # Pop class context
+        self.class_stack.pop()
+
+        return entities
+
 
     def _handle_import(self, node: ast.Import) -> None:
         """Handle import statement."""

@@ -533,6 +533,18 @@ async def find_entity(name: str, entity_type: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/query/execute")
+async def execute_query(payload: dict):
+    neo4j = get_neo4j_service()
+    query = payload.get("query")
+    params = payload.get("params", {})
+
+    if not query:
+        return {"error": "query is required"}
+
+    result = await neo4j.execute_query(query, params)
+    return {"result": result}
+
 @app.post("/api/query/dependencies")
 async def get_dependencies(name: str):
     """

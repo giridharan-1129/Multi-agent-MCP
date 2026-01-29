@@ -5,6 +5,8 @@ Handles all Neo4j database operations for the knowledge graph.
 """
 
 from typing import Any, Dict, List, Optional
+from fastapi.concurrency import run_in_threadpool
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -54,36 +56,153 @@ class Neo4jService:
             self.driver.close()
             logger.info("Neo4j connection closed")
 
+    async def clear_database(self) -> None:
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run("MATCH (n) DETACH DELETE n")
+
+        await run_in_threadpool(_run)
+    async def create_class_node(
+        self,
+        name: str,
+        module: str,
+        docstring: str = None,
+        line_number: int = None,
+    ):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (c:Class {name: $name, module: $module})
+                    SET c.docstring = $docstring,
+                        c.line_number = $line_number
+                    """,
+                    {
+                        "name": name,
+                        "module": module,
+                        "docstring": docstring,
+                        "line_number": line_number,
+                    },
+                )
+
+        await run_in_threadpool(_run)
+    async def create_function_node(
+        self,
+        name: str,
+        module: str,
+        docstring: str = None,
+        line_number: int = None,
+        is_async: bool = False,
+    ):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (f:Function {name: $name, module: $module})
+                    SET f.docstring = $docstring,
+                        f.line_number = $line_number,
+                        f.is_async = $is_async
+                    """,
+                    {
+                        "name": name,
+                        "module": module,
+                        "docstring": docstring,
+                        "line_number": line_number,
+                        "is_async": is_async,
+                    },
+                )
+
+        await run_in_threadpool(_run)
+    async def create_relationship(
+        self,
+        source_name: str,
+        source_module: str,
+        target_name: str,
+        target_module: str,
+        rel_type: str,
+        properties: Dict = None,
+    ):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    f"""
+                    MATCH (a {{name: $source_name, module: $source_module}})
+                    MATCH (b {{name: $target_name, module: $target_module}})
+                    MERGE (a)-[r:{rel_type}]->(b)
+                    SET r += $props
+                    """,
+                    {
+                        "source_name": source_name,
+                        "source_module": source_module,
+                        "target_name": target_name,
+                        "target_module": target_module,
+                        "props": properties or {},
+                    },
+                )
+
+        await run_in_threadpool(_run)
+
+
+
     async def execute_query(self, query: str, params: Optional[Dict] = None) -> List[Dict]:
-        """Execute a Cypher query."""
-        try:
-            if not self.driver:
-                return []
-            
+        if not self.driver:
+            return []
+
+        def _run():
             with self.driver.session(database=self.database) as session:
                 result = session.run(query, params or {})
-                return [dict(record) for record in result]
-                
+                return [record.data() for record in result]
+
+        try:
+            return await run_in_threadpool(_run)
         except Exception as e:
             logger.error(f"Query execution failed: {str(e)}")
             return []
 
     async def find_entity(self, name: str, entity_type: Optional[str] = None):
-            """Find an entity by name."""
-            try:
-                if not self.driver:
-                    return {}
-                
-                query = "MATCH (n) WHERE n.name = $name RETURN n as entity"
-                
-                with self.driver.session(database=self.database) as session:
-                    result = session.run(query, {"name": name})
-                    records = [dict(record) for record in result]
-                    return {"entity": records[0] if records else None} if records else {}
-                    
-            except Exception as e:
-                logger.error(f"Failed to find entity: {str(e)}")
+        try:
+            if not self.driver:
                 return {}
+
+            label = entity_type if entity_type else ""
+
+            def _run():
+                with self.driver.session(database=self.database) as session:
+                    # 1️⃣ Exact match (case-insensitive)
+                    query_exact = f"""
+                    MATCH (n{':' + label if label else ''})
+                    WHERE toLower(n.name) = toLower($name)
+                    RETURN n
+                    LIMIT 1
+                    """
+
+                    result = session.run(query_exact, {"name": name})
+                    record = result.single()
+                    if record:
+                        return record["n"]
+
+                    # 2️⃣ Fallback: contains
+                    query_contains = f"""
+                    MATCH (n{':' + label if label else ''})
+                    WHERE toLower(n.name) CONTAINS toLower($name)
+                    RETURN n
+                    LIMIT 1
+                    """
+
+                    result = session.run(query_contains, {"name": name})
+                    record = result.single()
+                    if record:
+                        return record["n"]
+
+                    return None
+
+            node = await run_in_threadpool(_run)
+            return {"entity": dict(node) if node else None}
+
+        except Exception as e:
+            logger.error(f"Failed to find entity: {str(e)}")
+            return {}
+
 
     async def get_graph_statistics(self) -> Dict[str, Any]:
             """Get graph statistics."""
