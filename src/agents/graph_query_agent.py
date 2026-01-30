@@ -355,17 +355,16 @@ class SearchEntitiesTool(MCPTool):
 
 
 class GetRelationshipsTool(MCPTool):
-    """Tool to get relationships between entities."""
+    """Tool to get related entities by relationship type."""
 
     name: str = "get_relationships"
-    description: str = "Find relationships between two entities"
+    description: str = "Get entities related to an entity by relationship type"
     category: str = "query"
 
     async def execute(
         self,
-        source: str,
-        target: str,
-        rel_type: Optional[str] = None,
+        name: str,
+        relationship: Optional[str] = None,
     ) -> ToolResult:
         """
         Get relationships.
@@ -381,41 +380,26 @@ class GetRelationshipsTool(MCPTool):
         try:
             neo4j = get_neo4j_service()
 
-            if rel_type:
-                query = f"""
-                MATCH (s)-[r:{rel_type}]->(t)
-                WHERE s.name = $source AND t.name = $target
-                RETURN s {{ .* }} AS source, t {{ .* }} AS target, 
-                       type(r) AS relationship_type, r {{ .* }} AS relationship_data
-                """
-            else:
-                query = """
-                MATCH (s)-[r]->(t)
-                WHERE s.name = $source AND t.name = $target
-                RETURN s { .* } AS source, t { .* } AS target, 
-                       type(r) AS relationship_type, r { .* } AS relationship_data
-                """
-
-            results = await neo4j.execute_query(
-                query,
-                {"source": source, "target": target},
+            results = await neo4j.get_relationships(
+                entity_name=name,
+                relationship_type=relationship,
             )
 
             logger.info(
                 "Relationships retrieved",
-                source=source,
-                target=target,
+                entity=name,
+                relationship=relationship,
                 count=len(results),
             )
             return ToolResult(
                 success=True,
                 data={
-                    "source": source,
-                    "target": target,
+                    "entity": name,
                     "relationships": results,
                     "count": len(results),
                 },
             )
+
 
         except Exception as e:
             logger.error(
@@ -436,26 +420,21 @@ class GetRelationshipsTool(MCPTool):
             description=self.description,
             parameters=[
                 ToolParameter(
-                    name="source",
-                    description="Source entity name",
+                    name="name",
+                    description="Entity name",
                     type="string",
                     required=True,
                 ),
                 ToolParameter(
-                    name="target",
-                    description="Target entity name",
-                    type="string",
-                    required=True,
-                ),
-                ToolParameter(
-                    name="rel_type",
-                    description="Relationship type filter (optional)",
+                    name="relationship",
+                    description="Optional relationship type (e.g. CALLS, CONTAINS)",
                     type="string",
                     required=False,
                 ),
             ],
             category=self.category,
         )
+
 
 
 class GraphQueryAgent(BaseAgent):

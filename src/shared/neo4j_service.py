@@ -118,9 +118,7 @@ class Neo4jService:
         def _run():
             with self.driver.session(database=self.database) as session:
                 # Extract filename from path
-                import os
-                filename = os.path.basename(path)
-                
+                filename = path.split("/")[-1]
                 session.run(
                     """
                     MERGE (f:File {path: $path})
@@ -142,10 +140,14 @@ class Neo4jService:
     ):
         def _run():
             with self.driver.session(database=self.database) as session:
+                # Build match clauses - File nodes match on 'path', others on 'name'
+                source_prop = 'path' if source_label == 'File' else 'name'
+                target_prop = 'path' if target_label == 'File' else 'name'
+
                 session.run(
                     f"""
-                    MATCH (a:{source_label} {{name: $source}})
-                    MATCH (b:{target_label} {{name: $target}})
+                    MATCH (a:{source_label} {{{source_prop}: $source}})
+                    MATCH (b:{target_label} {{{target_prop}: $target}})
                     MERGE (a)-[r:{rel_type}]->(b)
                     SET r += $props
                     """,
@@ -210,7 +212,7 @@ class Neo4jService:
 
             def _run():
                 with self.driver.session(database=self.database) as session:
-                    # 1️⃣ Exact match (case-insensitive)
+                    # 1ï¸âƒ£ Exact match (case-insensitive)
                     query_exact = f"""
                     MATCH (n{':' + label if label else ''})
                     WHERE toLower(n.name) = toLower($name)
@@ -223,7 +225,7 @@ class Neo4jService:
                     if record:
                         return record["n"]
 
-                    # 2️⃣ Fallback: contains
+                    # 2ï¸âƒ£ Fallback: contains
                     query_contains = f"""
                     MATCH (n{':' + label if label else ''})
                     WHERE toLower(n.name) CONTAINS toLower($name)
@@ -255,6 +257,165 @@ class Neo4jService:
                 )
 
         await run_in_threadpool(_run)
+    async def search_entities(self, query_text: str, limit: int = 5) -> List[Dict]:
+            """Search for entities matching query text."""
+            def _run():
+                with self.driver.session(database=self.database) as session:
+                    cypher = """
+                    MATCH (n)
+                    WHERE n.name IS NOT NULL 
+                    AND (toLower(n.name) CONTAINS toLower($query) 
+                        OR toLower(n.docstring) CONTAINS toLower($query))
+                    RETURN {
+                        name: n.name,
+                        type: labels(n)[0],
+                        module: n.module,
+                        docstring: n.docstring,
+                        line_number: n.line_number
+                    } as entity
+                    LIMIT $limit
+                    """
+                    result = session.run(cypher, {"query": query_text, "limit": limit})
+                    return [record["entity"] for record in result]
+            
+            try:
+                return await run_in_threadpool(_run)
+            except Exception as e:
+                logger.error(f"Entity search failed: {str(e)}")
+                return []
+
+    async def get_entity_context(self, entity_name: str) -> Dict:
+            """Get full context for an entity including relationships."""
+            def _run():
+                with self.driver.session(database=self.database) as session:
+                    cypher = """
+                    MATCH (n {name: $name})
+                    OPTIONAL MATCH (n)-[r]->(related)
+                    RETURN {
+                        entity: {
+                            name: n.name,
+                            type: labels(n)[0],
+                            module: n.module,
+                            docstring: n.docstring,
+                            line_number: n.line_number
+                        },
+                        relationships: collect({
+                            type: type(r),
+                            target: related.name
+                        })
+                    } as context
+                    """
+                    result = session.run(cypher, {"name": entity_name})
+                    record = result.single()
+                    return record["context"] if record else None
+            
+            try:
+                return await run_in_threadpool(_run)
+            except Exception as e:
+                logger.error(f"Failed to get entity context: {str(e)}")
+                return None
+
+    async def get_dependencies(self, entity_name: str) -> List[Dict]:
+        """Get all entities that a given entity depends on."""
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                cypher = """
+                MATCH (source {name: $name})
+                MATCH (source)-[r]->(target)
+                WHERE type(r) IN ['IMPORTS', 'CALLS', 'INHERITS_FROM', 'CONTAINS']
+                RETURN {
+                    target_name: target.name,
+                    target_type: labels(target)[0],
+                    relationship_type: type(r),
+                    target_module: target.module
+                } as dependency
+                """
+                result = session.run(cypher, {"name": entity_name})
+                return [record["dependency"] for record in result]
+        
+        try:
+            return await run_in_threadpool(_run)
+        except Exception as e:
+            logger.error(f"Failed to get dependencies: {str(e)}")
+            return []
+
+    async def get_dependents(self, entity_name: str) -> List[Dict]:
+        """Get all entities that depend on a given entity."""
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                cypher = """
+                MATCH (target {name: $name})
+                MATCH (source)-[r]->(target)
+                WHERE type(r) IN ['IMPORTS', 'CALLS', 'INHERITS_FROM', 'CONTAINS']
+                RETURN {
+                    source_name: source.name,
+                    source_type: labels(source)[0],
+                    relationship_type: type(r),
+                    source_module: source.module
+                } as dependent
+                """
+                result = session.run(cypher, {"name": entity_name})
+                return [record["dependent"] for record in result]
+        
+        try:
+            return await run_in_threadpool(_run)
+        except Exception as e:
+            logger.error(f"Failed to get dependents: {str(e)}")
+            return []
+
+    async def get_relationships(self, entity_name: str, relationship_type: str = None) -> List[Dict]:
+        """Get all entities related by a specific relationship type."""
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                # Smart CONTAINS: Class/Function -> File -> Package
+                if relationship_type == "CONTAINS":
+                    cypher = """
+                    MATCH (e {name: $name})<-[:DEFINES]-(f:File)<-[:CONTAINS]-(p:Package)
+                    RETURN {
+                        target_name: p.name,
+                        target_type: "Package",
+                        relationship_type: "CONTAINS",
+                        target_module: null
+                    } AS relationship
+                    """
+                    result = session.run(cypher, {"name": entity_name})
+                    return [r["relationship"] for r in result]
+
+                # Default behavior (bidirectional)
+                if relationship_type:
+                    cypher = """
+                    MATCH (e {name: $name})-[r]-(other)
+                    WHERE type(r) = $rel
+                    RETURN {
+                        target_name: other.name,
+                        target_type: labels(other)[0],
+                        relationship_type: type(r),
+                        target_module: other.module
+                    } AS relationship
+                    """
+                    result = session.run(
+                        cypher,
+                        {"name": entity_name, "rel": relationship_type},
+                    )
+                else:
+                    cypher = """
+                    MATCH (e {name: $name})-[r]-(other)
+                    RETURN {
+                        target_name: other.name,
+                        target_type: labels(other)[0],
+                        relationship_type: type(r),
+                        target_module: other.module
+                    } AS relationship
+                    """
+                    result = session.run(cypher, {"name": entity_name})
+
+                return [r["relationship"] for r in result]
+
+        try:
+            return await run_in_threadpool(_run)
+        except Exception as e:
+            logger.error(f"Failed to get relationships: {str(e)}")
+            return []
 
 
     async def get_graph_statistics(self) -> Dict[str, Any]:
@@ -306,5 +467,4 @@ def get_neo4j_service() -> Neo4jService:
     if _neo4j_service is None:
         raise RuntimeError("Neo4jService not initialized. Call init_neo4j_service() first.")
     return _neo4j_service
-
- 
+   

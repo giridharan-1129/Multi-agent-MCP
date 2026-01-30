@@ -193,12 +193,11 @@ class IndexRepositoryTool(MCPTool):
                             if entity.get("parent_class"):
                                 await neo4j.create_relationship(
                                     source_name=entity["parent_class"],
-                                    source_module=entity["module"],
+                                    source_label="Class",
                                     target_name=entity["name"],
-                                    target_module=entity["module"],
+                                    target_label="Function",
                                     rel_type="DEFINES",
-                                
-    )
+                                )
 
                 except Exception as e:
                     logger.error("Error storing entity", entity=entity["name"], error=str(e))

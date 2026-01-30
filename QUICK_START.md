@@ -1,99 +1,57 @@
 # Quick Start Guide
 
-Get the FastAPI Multi-Agent System running in 5 minutes!
+Get the FastAPI Multi-Agent Repository Chat System running in 5 minutes.
 
 ## Prerequisites
 
-- Python 3.10+
-- Docker & Docker Compose
-- OpenAI API key (get from https://platform.openai.com/api-keys)
-- Git
+- Docker and Docker Compose installed
+- Git installed
+- Basic understanding of REST APIs and WebSockets
 
-## 🚀 Option 1: Quick Start with Docker (Easiest)
+## 1. Clone and Configure (2 minutes)
 
-### Step 1: Clone and Setup
+Clone the repository:
 ```bash
+git clone <repository-url>
 cd MultiAgentMCP
-
-# Copy environment template
-cp .env.example .env
-
-# Edit .env and add your OpenAI API key
-nano .env
-# Find OPENAI_API_KEY=your-openai-api-key-here
-# Replace with your actual key
 ```
 
-### Step 2: Start Everything
+Set up environment variables:
 ```bash
-# Start Neo4j and Gateway
+cp .env.example .env
+```
+
+Edit .env and set required variables:
+```
+NEO4J_USERNAME=neo4j
+NEO4J_PASSWORD=your-secure-password
+OPENAI_API_KEY=your-openai-key
+```
+
+## 2. Start the System (3 minutes)
+
+Start all services:
+```bash
 docker-compose up -d
+```
 
-# Wait for services to start (30 seconds)
-sleep 30
-
-# Check status
+Verify services are running:
+```bash
 docker-compose ps
 ```
 
-### Step 3: Verify Setup
+You should see:
+- multiagent-neo4j: Up
+- multiagent-gateway: Up
+
+## 3. Verify Installation
+
+Check system health:
 ```bash
-# Check health
-curl http://localhost:8000/health | jq
-
-# List agents
-curl http://localhost:8000/agents | jq
+curl http://localhost:8000/health
 ```
 
-### Step 4: Access the API
-```
-Swagger UI:    http://localhost:8000/docs
-ReDoc:         http://localhost:8000/redoc
-API Base:      http://localhost:8000
-```
-
-## 🖥️ Option 2: Local Development Setup
-
-### Step 1: Initial Setup
-```bash
-# Run setup script
-./scripts/setup.sh
-
-# This will:
-# - Check Python version
-# - Create .env file
-# - Install dependencies
-# - Start Neo4j with Docker
-```
-
-### Step 2: Edit Configuration
-```bash
-# Open and edit .env
-nano .env
-
-# Key settings:
-OPENAI_API_KEY=sk-...          # Your OpenAI API key
-NEO4J_PASSWORD=change-me        # Set a strong password
-LOG_LEVEL=DEBUG                 # DEBUG for development
-```
-
-### Step 3: Start Gateway
-```bash
-# Start with auto-reload
-uvicorn src.gateway.main:app --reload
-
-# Or use the start script
-./scripts/start-dev.sh
-```
-
-## 📝 Example API Calls
-
-### 1. Check System Health
-```bash
-curl http://localhost:8000/health | jq
-```
-
-Response:
+Expected response:
 ```json
 {
   "status": "healthy",
@@ -107,208 +65,276 @@ Response:
 }
 ```
 
-### 2. Index FastAPI Repository
+Access API documentation:
+```
+http://localhost:8000/docs
+```
+
+## 4. Test Basic Functionality
+
+Test REST chat API:
+```bash
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"query":"What is FastAPI?"}'
+```
+
+Test WebSocket chat:
+```python
+import asyncio
+import json
+import websockets
+
+async def test_websocket():
+    async with websockets.connect("ws://localhost:8000/ws/chat") as ws:
+        await ws.send(json.dumps({"query": "Explain dependency injection"}))
+        
+        for _ in range(5):
+            msg = await asyncio.wait_for(ws.recv(), timeout=5)
+            data = json.loads(msg)
+            print(f"Received: {data.get('type')}")
+            
+            if data.get('type') == 'response_complete':
+                break
+
+asyncio.run(test_websocket())
+```
+
+List available agents:
+```bash
+curl http://localhost:8000/agents | python3 -m json.tool | head -30
+```
+
+## 5. Index a Repository
+
+Start indexing the FastAPI repository:
 ```bash
 curl -X POST http://localhost:8000/api/index \
   -H "Content-Type: application/json" \
   -d '{
     "repo_url": "https://github.com/tiangolo/fastapi",
     "full_index": true
-  }' | jq
-```
-
-Response:
-```json
-{
-  "status": "success",
-  "files_processed": 45,
-  "entities_created": 320,
-  "relationships_created": 580
-}
-```
-
-### 3. Chat with System
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "How does FastAPI handle dependency injection?"
-  }' | jq
-```
-
-### 4. Find an Entity
-```bash
-curl -X POST "http://localhost:8000/api/query/find?name=FastAPI&entity_type=Class" | jq
-```
-
-### 5. Get Dependencies
-```bash
-curl -X POST "http://localhost:8000/api/query/dependencies?name=APIRouter" | jq
-```
-
-### 6. Analyze a Function
-```bash
-curl -X POST "http://localhost:8000/api/analysis/function?name=get_openapi_schema" | jq
-```
-
-## 🐛 Troubleshooting
-
-### Neo4j Connection Failed
-```bash
-# Check if Neo4j is running
-docker ps | grep neo4j
-
-# View Neo4j logs
-docker logs neo4j
-
-# Restart Neo4j
-docker restart neo4j
-
-# Or start manually
-docker run -d \
-  --name neo4j \
-  -p 7687:7687 \
-  -p 7474:7474 \
-  -e NEO4J_AUTH=neo4j/password \
-  neo4j:5.14
-```
-
-### Gateway Won't Start
-```bash
-# Check if port 8000 is in use
-lsof -i :8000
-
-# Kill the process if needed
-kill -9 <PID>
-
-# Or use a different port
-uvicorn src.gateway.main:app --port 8001
-```
-
-### OpenAI API Key Error
-```bash
-# Verify API key is set
-echo $OPENAI_API_KEY
-
-# Test API key
-curl https://api.openai.com/v1/models \
-  -H "Authorization: Bearer $OPENAI_API_KEY"
-```
-
-### Python Version Issue
-```bash
-# Check Python version
-python --version
-
-# Should be 3.10+
-# If not, install Python 3.10 or later
-```
-
-## 📊 Common Workflows
-
-### Workflow 1: Index and Query
-```bash
-# 1. Index repository
-curl -X POST http://localhost:8000/api/index \
-  -H "Content-Type: application/json" \
-  -d '{"repo_url": "https://github.com/tiangolo/fastapi"}'
-
-# 2. Wait for indexing to complete (check status)
-curl http://localhost:8000/api/index/status
-
-# 3. Find an entity
-curl -X POST "http://localhost:8000/api/query/find?name=FastAPI"
-
-# 4. Get its dependencies
-curl -X POST "http://localhost:8000/api/query/dependencies?name=FastAPI"
-```
-
-### Workflow 2: Chat Conversation
-```bash
-# 1. Start a chat (no session_id needed for first message)
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"query": "What is FastAPI?"}'
-
-# Response will include session_id
-
-# 2. Continue conversation with same session
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "Show me examples",
-    "session_id": "<session_id_from_above>"
   }'
 ```
 
-### Workflow 3: Code Analysis
+This returns a job_id. Store it to track progress:
+```json
+{
+  "job_id": "abc123def456",
+  "status": "pending",
+  "repo_url": "https://github.com/tiangolo/fastapi",
+  "created_at": "2026-01-30T13:05:25.600448"
+}
+```
+
+Check job status:
 ```bash
-# 1. Analyze a function
-curl -X POST "http://localhost:8000/api/analysis/function?name=get_openapi_schema"
+curl http://localhost:8000/api/index/jobs/abc123def456
+```
 
-# 2. Analyze a class
-curl -X POST "http://localhost:8000/api/analysis/class?name=FastAPI"
+Response shows current progress:
+```json
+{
+  "job_id": "abc123def456",
+  "status": "running",
+  "progress": 45.5,
+  "files_processed": 452,
+  "entities_created": 1250,
+  "relationships_created": 3400
+}
+```
 
-# 3. Find design patterns
-curl -X POST "http://localhost:8000/api/analysis/patterns"
+View graph statistics:
+```bash
+curl http://localhost:8000/api/index/status
+```
 
-# 4. Compare implementations
-curl -X POST http://localhost:8000/api/analysis/compare \
+## 6. Query the Knowledge Graph
+
+Find a function:
+```bash
+curl -X POST http://localhost:8000/api/query/find \
   -H "Content-Type: application/json" \
-  -d '{"entity1": "APIRouter", "entity2": "FastAPI"}'
+  -d '{"name": "HTTPException"}'
 ```
 
-## 🛠️ Useful Commands
+Get dependencies:
 ```bash
-# View logs (Docker)
-docker-compose logs -f gateway
-docker-compose logs -f neo4j
-
-# Stop all services
-docker-compose down
-
-# Stop and remove volumes (clean slate)
-docker-compose down -v
-
-# Rebuild images
-docker-compose build
-
-# Run tests
-make test
-
-# Format code
-make format
-
-# Lint code
-make lint
+curl -X POST http://localhost:8000/api/query/dependencies \
+  -H "Content-Type: application/json" \
+  -d '{"name": "HTTPException"}'
 ```
 
-## 📚 Next Steps
+## Common Tasks
 
-1. Read [README.md](README.md) for full documentation
-2. Check [ARCHITECTURE.md](ARCHITECTURE.md) for system design
-3. Explore [API endpoints](README.md#-api-endpoints) in detail
-4. Run [tests](QUICK_START.md#-option-2-local-development-setup)
-5. Index your own repository
+### View Logs
 
-## 🆘 Getting Help
+Check gateway logs:
+```bash
+docker-compose logs -f gateway
+```
 
-- Check the [Troubleshooting section](README.md#-troubleshooting)
-- Review logs: `docker-compose logs -f`
-- Check API docs: http://localhost:8000/docs
-- Review examples in this guide
+Check Neo4j logs:
+```bash
+docker-compose logs -f neo4j
+```
 
-## ✅ Verification Checklist
+### Stop the System
 
-After setup, verify everything works:
+Stop all containers:
+```bash
+docker-compose down
+```
 
-- [ ] `curl http://localhost:8000/health` returns 200
-- [ ] All 4 agents show "healthy" status
-- [ ] Can index a repository
-- [ ] Can query entities
-- [ ] Can perform code analysis
-- [ ] Swagger UI loads at `/docs`
+To also remove data:
+```bash
+docker-compose down -v
+```
 
-**You're ready to go! 🎉**
+### Restart the System
 
-For detailed information, see [README.md](README.md).
+Restart all services:
+```bash
+docker-compose restart
+```
+
+### Access Neo4j Browser
+
+Open browser to: http://localhost:7475
+
+Login with credentials from .env file
+
+Query example:
+```cypher
+MATCH (p:Package) RETURN p.name LIMIT 10
+```
+
+### Local Development
+
+For development without Docker:
+
+1. Install dependencies:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -e ".[dev]"
+```
+
+2. Start Neo4j separately:
+```bash
+docker run -d \
+  --name neo4j \
+  -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/password \
+  neo4j:5.14-community
+```
+
+3. Start gateway:
+```bash
+uvicorn src.gateway.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+4. Run tests:
+```bash
+pytest src/tests/ -v --cov=src
+```
+
+## Troubleshooting
+
+### Services not starting
+
+Check docker-compose.yml syntax:
+```bash
+docker-compose config
+```
+
+View detailed logs:
+```bash
+docker-compose up --no-detach
+```
+
+### Neo4j connection errors
+
+Verify Neo4j is healthy:
+```bash
+curl http://localhost:7474
+```
+
+Check Neo4j logs:
+```bash
+docker-compose logs neo4j
+```
+
+### Gateway not responding
+
+Check if container is running:
+```bash
+docker-compose ps gateway
+```
+
+View gateway logs:
+```bash
+docker-compose logs gateway
+```
+
+Verify port is not in use:
+```bash
+lsof -i :8000
+```
+
+### Out of memory
+
+Neo4j and gateway may need memory allocation. Edit docker-compose.yml:
+
+```yaml
+gateway:
+  # Add:
+  deploy:
+    resources:
+      limits:
+        memory: 2G
+```
+
+### Permission denied errors
+
+Ensure Docker daemon is running:
+```bash
+sudo systemctl start docker
+```
+
+Or add user to docker group:
+```bash
+sudo usermod -aG docker $USER
+```
+
+## Next Steps
+
+1. Read the full README.md for complete documentation
+2. Review API.md for endpoint reference
+3. Check ARCHITECTURE.md for design details
+4. Explore the codebase in src/
+5. Run tests to verify functionality
+
+## API Quick Reference
+
+Health: GET /health
+Agents: GET /agents
+Chat: POST /api/chat
+WebSocket: WS /ws/chat
+Index: POST /api/index
+Job Status: GET /api/index/jobs/{id}
+Graph Stats: GET /api/index/status
+Find: POST /api/query/find
+Dependencies: POST /api/query/dependencies
+Analyze Function: POST /api/analysis/function
+
+Full documentation at: http://localhost:8000/docs
+
+## Support
+
+For issues:
+1. Check docker-compose logs
+2. Verify .env configuration
+3. Ensure ports are available (8000, 7687, 7474)
+4. Review README.md troubleshooting section
+5. Check API documentation at /docs endpoint

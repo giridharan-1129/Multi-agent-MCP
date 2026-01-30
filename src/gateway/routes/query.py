@@ -1,0 +1,221 @@
+"""
+Knowledge graph query endpoints.
+
+WHAT: /api/query/* endpoints
+WHY: Search and traverse the knowledge graph
+HOW: Use Graph Query Agent to find entities and relationships
+"""
+
+from typing import Optional
+from fastapi import APIRouter, HTTPException
+
+from ...shared.logger import get_logger, generate_correlation_id, set_correlation_id
+from ...shared.neo4j_service import get_neo4j_service
+from ..dependencies import get_graph_query
+
+logger = get_logger(__name__)
+router = APIRouter(tags=["query"], prefix="/api/query")
+
+
+@router.post("/find")
+async def find_entity(name: str, entity_type: Optional[str] = None):
+    """
+    Find an entity in the knowledge graph.
+
+    Args:
+        name: Entity name
+        entity_type: Optional type filter (Class, Function, Module)
+
+    Returns:
+        Entity data if found
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        graph_query = get_graph_query()
+
+        result = await graph_query.execute_tool(
+            "find_entity",
+            {
+                "name": name,
+                "entity_type": entity_type,
+            },
+        )
+
+        if not result.success:
+            raise HTTPException(status_code=404, detail=result.error)
+
+        logger.info("Entity found", name=name)
+        return {
+            "entity": result.data.get("entity"),
+            "correlation_id": correlation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to find entity", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/execute")
+async def execute_query(payload: dict):
+    """
+    Execute a custom Cypher query against Neo4j.
+
+    Args:
+        payload: {"query": "...", "params": {...}}
+
+    Returns:
+        Query results
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        neo4j = get_neo4j_service()
+        query = payload.get("query")
+        params = payload.get("params", {})
+
+        if not query:
+            raise HTTPException(status_code=400, detail="query is required")
+
+        logger.info("Query executed", query=query[:100])
+        result = await neo4j.execute_query(query, params)
+        return {
+            "result": result,
+            "correlation_id": correlation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to execute query", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dependencies")
+async def get_dependencies(name: str):
+    """
+    Get dependencies of an entity.
+
+    Args:
+        name: Entity name
+
+    Returns:
+        List of dependencies
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        graph_query = get_graph_query()
+
+        result = await graph_query.execute_tool(
+            "get_dependencies",
+            {"name": name},
+        )
+
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.error)
+
+        logger.info("Dependencies retrieved", entity=name)
+        return {
+            "entity": name,
+            "dependencies": result.data.get("dependencies", []),
+            "count": result.data.get("count", 0),
+            "correlation_id": correlation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get dependencies", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dependents")
+async def get_dependents(name: str):
+    """
+    Get entities that depend on this entity.
+
+    Args:
+        name: Entity name
+
+    Returns:
+        List of dependents
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        graph_query = get_graph_query()
+
+        result = await graph_query.execute_tool(
+            "get_dependents",
+            {"name": name},
+        )
+
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.error)
+
+        logger.info("Dependents retrieved", entity=name)
+        return {
+            "entity": name,
+            "dependents": result.data.get("dependents", []),
+            "count": result.data.get("count", 0),
+            "correlation_id": correlation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get dependents", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/related")
+async def get_related(name: str, relationship: Optional[str] = None):
+    """
+    Get entities related by a specific relationship type.
+
+    Args:
+        name: Entity name
+        relationship: Relationship type filter
+
+    Returns:
+        Related entities
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        graph_query = get_graph_query()
+
+        result = await graph_query.execute_tool(
+                "get_relationships",
+                {
+                    "name": name,
+                    "relationship": relationship,
+                },
+            )
+
+
+        if not result.success:
+            raise HTTPException(status_code=400, detail=result.error)
+
+        logger.info("Related entities retrieved", entity=name, relationship=relationship)
+        return {
+            "entity": name,
+            "relationships": result.data.get("relationships", []),
+            "count": result.data.get("count", 0),
+            "correlation_id": correlation_id,
+        }
+
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get related entities", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
