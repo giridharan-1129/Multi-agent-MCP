@@ -109,8 +109,17 @@ class IndexRepositoryTool(MCPTool):
                     logger.error("Unexpected error processing file", file=file_path, error=str(e))
 
             # Store in Neo4j
-            logger.info("Storing entities in Neo4j", count=len(all_entities))
+            # Build entity lookup ONCE
+            entity_lookup = {
+                (e["name"], e.get("type")): e.get("module")
+                for e in all_entities
+            }
+            # Create File nodes
+            unique_files = {e["module"] for e in all_entities if e.get("module")}
+            for file_path in unique_files:
+                await neo4j.create_file_node(file_path)
 
+            logger.info("Storing entities in Neo4j", count=len(all_entities))
             for entity in all_entities:
                 try:
                     if entity["type"] == "Class":
@@ -120,25 +129,48 @@ class IndexRepositoryTool(MCPTool):
                             docstring=entity.get("docstring"),
                             line_number=entity.get("line_number"),
                         )
+                        await neo4j.create_defines_relationship(
+                                file_path=entity["module"],
+                                target_name=entity["name"],
+                                target_module=entity["module"],
+                                target_type="Class",
+                            )
                     elif entity["type"] == "Function":
-                        await neo4j.create_function_node(
-                            name=entity["name"],
-                            module=entity.get("module", ""),
-                            docstring=entity.get("docstring"),
-                            line_number=entity.get("line_number"),
-                            is_async=entity.get("is_async", False),
-                        )
+                            await neo4j.create_function_node(
+                                name=entity["name"],
+                                module=entity.get("module", ""),
+                                docstring=entity.get("docstring"),
+                                line_number=entity.get("line_number"),
+                                is_async=entity.get("is_async", False),
+                            )
+                            await neo4j.create_defines_relationship(
+                                file_path=entity["module"],
+                                target_name=entity["name"],
+                                target_module=entity["module"],
+                                target_type="Function",
+                            )
+                            if entity.get("parent_class"):
+                                await neo4j.create_relationship(
+                                    source_name=entity["parent_class"],
+                                    source_module=entity["module"],
+                                    target_name=entity["name"],
+                                    target_module=entity["module"],
+                                    rel_type="DEFINES",
+                                )
+
                 except Exception as e:
                     logger.error("Error storing entity", entity=entity["name"], error=str(e))
                 # Build entity lookup for module resolution
-                entity_lookup = {
-                    (e["name"], e.get("type")): e.get("module")
-                    for e in all_entities
-                }
+               
 
             # Store relationships
             logger.info("Storing relationships in Neo4j", count=len(all_relationships))
             for rel in all_relationships:
+                if rel["type"] == "DECORATED_BY":
+                    await neo4j.create_function_node(
+                        name=rel["target"],
+                        module=rel.get("target_module", rel.get("source_module")),
+                    )
                 try:
                     source_module = rel.get("source_module")
                     target_module = rel.get("target_module")

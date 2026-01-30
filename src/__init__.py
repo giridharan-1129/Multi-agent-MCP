@@ -20,3 +20,4 @@ from .shared import config, get_logger
 logger = get_logger(__name__)
 
 __all__ = ["config", "get_logger", "logger"]
+

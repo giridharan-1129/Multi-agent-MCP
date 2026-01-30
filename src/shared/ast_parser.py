@@ -13,7 +13,6 @@ Example:
 """
 
 import ast
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from .exceptions import FileParsingError
@@ -38,7 +37,9 @@ class ASTParser:
         """Initialize AST parser."""
         self.current_file: Optional[str] = None
         self.current_module_imports: Set[str] = set()
+        self.class_stack: list[str] = []
         logger.debug("ASTParser initialized")
+
 
     def parse_file(self, file_path: str) -> List[Dict[str, Any]]:
         """
@@ -107,7 +108,7 @@ class ASTParser:
                 entities.append(entity)
 
         return entities
-        
+
     def _handle_class_with_context(self, node: ast.ClassDef) -> List[Dict[str, Any]]:
         entities = []
 
@@ -153,12 +154,6 @@ class ASTParser:
         docstring = ast.get_docstring(node)
         bases = [self._get_name(base) for base in node.bases]
 
-        # Extract methods
-        methods = []
-        for item in node.body:
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                methods.append(self._get_name(item))
-
         entity = {
             "type": "Class",
             "name": node.name,
@@ -166,11 +161,10 @@ class ASTParser:
             "line_number": node.lineno,
             "docstring": docstring,
             "bases": bases,
-            "methods": methods,
             "decorators": self._get_decorators(node),
         }
+        logger.debug("Class extracted", name=node.name)
 
-        logger.debug("Class extracted", name=node.name, methods=len(methods))
         return entity
 
     def _handle_function(

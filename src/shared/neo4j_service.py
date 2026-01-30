@@ -113,6 +113,19 @@ class Neo4jService:
                 )
 
         await run_in_threadpool(_run)
+
+    async def create_file_node(self, path: str):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (f:File {path: $path})
+                    """,
+                    {"path": path},
+                )
+
+        await run_in_threadpool(_run)
+
     async def create_relationship(
         self,
         source_name: str,
@@ -137,6 +150,30 @@ class Neo4jService:
                         "target_name": target_name,
                         "target_module": target_module,
                         "props": properties or {},
+                    },
+                )
+
+        await run_in_threadpool(_run)
+
+    async def create_defines_relationship(
+        self,
+        file_path: str,
+        target_name: str,
+        target_module: str,
+        target_type: str,
+    ):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    f"""
+                    MATCH (f:File {{path: $file}})
+                    MATCH (t:{target_type} {{name: $name, module: $module}})
+                    MERGE (f)-[:DEFINES]->(t)
+                    """,
+                    {
+                        "file": file_path,
+                        "name": target_name,
+                        "module": target_module,
                     },
                 )
 

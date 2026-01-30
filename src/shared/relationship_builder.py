@@ -54,7 +54,14 @@ class RelationshipBuilder:
         relationships = []
 
         # Build inheritance relationships
-        relationships.extend(self._build_inheritance_relationships(entities))
+        entity_lookup = {
+            (e["name"], e["type"]): e.get("module")
+            for e in entities
+        }
+
+        relationships.extend(
+            self._build_inheritance_relationships(entities, entity_lookup)
+        )
 
         # Build import relationships
         relationships.extend(self._build_import_relationships(entities, imports))
@@ -78,7 +85,8 @@ class RelationshipBuilder:
     def _build_inheritance_relationships(
         self,
         entities: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+        entity_lookup: Dict[tuple, str],
+    ):
         """
         Build inheritance relationships.
 
@@ -100,7 +108,9 @@ class RelationshipBuilder:
                             "source": entity["name"],
                             "source_module": entity.get("module"),
                             "target": class_name,
-                            "target_module": None,  # resolved later
+                            "target_module": (
+                                entity_lookup.get((class_name, "Class"))
+                            ),
                             "type": "INHERITS_FROM",
                             "line_number": entity.get("line_number"),
                         }
@@ -120,37 +130,25 @@ class RelationshipBuilder:
         entities: List[Dict[str, Any]],
         imports: Set[str],
     ) -> List[Dict[str, Any]]:
-        """
-        Build import relationships.
-
-        Args:
-            entities: List of entities
-            imports: Set of imported modules
-
-        Returns:
-            List of import relationships
-        """
         relationships = []
 
-        for entity in entities:
-            # Check if entity uses imported modules
-            if entity.get("docstring"):
-                for import_module in imports:
-                    if import_module in entity["docstring"]:
-                        relationship = {
-                            "source": entity["name"],
-                            "target": import_module,
-                            "type": "IMPORTS",
-                            "line_number": entity.get("line_number"),
-                        }
-                        relationships.append(relationship)
-                        logger.debug(
-                            "Import relationship found",
-                            source=entity["name"],
-                            target=import_module,
-                        )
+        if not entities or not imports:
+            return relationships
+
+        source_module = entities[0].get("module")
+
+        for import_module in imports:
+            relationships.append({
+                "source": source_module,
+                "source_module": source_module,
+                "target": import_module.split(".")[-1],
+                "target_module": import_module,
+                "type": "IMPORTS",
+            })
 
         return relationships
+
+
 
     def _build_decorator_relationships(
         self,
@@ -176,11 +174,14 @@ class RelationshipBuilder:
 
                     relationship = {
                         "source": entity["name"],
+                        "source_module": entity.get("module"),
                         "target": decorator_name,
+                        "target_module": entity.get("module"),  # decorators usually local
                         "type": "DECORATED_BY",
                         "decorator_full": decorator,
                         "line_number": entity.get("line_number"),
                     }
+
                     relationships.append(relationship)
 
                     logger.debug(
@@ -189,50 +190,6 @@ class RelationshipBuilder:
                         decorator=decorator,
                     )
 
-        return relationships
-
-    def _build_call_relationships(
-        self,
-        entities: List[Dict[str, Any]],
-        file_content: str,
-    ) -> List[Dict[str, Any]]:
-        """
-        Build function call relationships.
-
-        Args:
-            entities: List of entities
-            file_content: File content to analyze
-
-        Returns:
-            List of call relationships
-        """
-        relationships = []
-
-        # Get all function and class names
-        names = {e["name"] for e in entities}
-
-        for entity in entities:
-            if entity["type"] == "Function":
-                # Simple pattern matching for function calls
-                # This is basic - a full implementation would use AST analysis
-                pattern = rf"\b({entity['name']})\s*\("
-                matches = re.finditer(pattern, file_content)
-
-                for match in matches:
-                    # Find which entity contains this call
-                    for caller in entities:
-                        if caller["type"] == "Function" and caller["name"] != entity["name"]:
-                            # Very basic heuristic - would need better source location tracking
-                            relationship = {
-                                "source": caller["name"],
-                                "target": entity["name"],
-                                "type": "CALLS",
-                                "line_number": entity.get("line_number"),
-                            }
-                            if relationship not in relationships:
-                                relationships.append(relationship)
-
-        logger.debug("Call relationships found", count=len(relationships))
         return relationships
 
     def find_circular_dependencies(
