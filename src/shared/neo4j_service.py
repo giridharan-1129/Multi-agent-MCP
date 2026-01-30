@@ -117,11 +117,16 @@ class Neo4jService:
     async def create_file_node(self, path: str):
         def _run():
             with self.driver.session(database=self.database) as session:
+                # Extract filename from path
+                import os
+                filename = os.path.basename(path)
+                
                 session.run(
                     """
                     MERGE (f:File {path: $path})
+                    SET f.name = $name
                     """,
-                    {"path": path},
+                    {"path": path, "name": filename},
                 )
 
         await run_in_threadpool(_run)
@@ -129,9 +134,9 @@ class Neo4jService:
     async def create_relationship(
         self,
         source_name: str,
-        source_module: str,
+        source_label: str,
         target_name: str,
-        target_module: str,
+        target_label: str,
         rel_type: str,
         properties: Dict = None,
     ):
@@ -139,21 +144,21 @@ class Neo4jService:
             with self.driver.session(database=self.database) as session:
                 session.run(
                     f"""
-                    MATCH (a {{name: $source_name, module: $source_module}})
-                    MATCH (b {{name: $target_name, module: $target_module}})
+                    MATCH (a:{source_label} {{name: $source}})
+                    MATCH (b:{target_label} {{name: $target}})
                     MERGE (a)-[r:{rel_type}]->(b)
                     SET r += $props
                     """,
                     {
-                        "source_name": source_name,
-                        "source_module": source_module,
-                        "target_name": target_name,
-                        "target_module": target_module,
+                        "source": source_name,
+                        "target": target_name,
                         "props": properties or {},
                     },
                 )
 
         await run_in_threadpool(_run)
+
+
 
     async def create_defines_relationship(
         self,
@@ -239,6 +244,17 @@ class Neo4jService:
         except Exception as e:
             logger.error(f"Failed to find entity: {str(e)}")
             return {}
+    async def create_package_node(self, name: str):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (p:Package {name: $name})
+                    """,
+                    {"name": name},
+                )
+
+        await run_in_threadpool(_run)
 
 
     async def get_graph_statistics(self) -> Dict[str, Any]:

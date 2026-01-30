@@ -69,9 +69,8 @@ class RelationshipBuilder:
         # Build decorator relationships
         relationships.extend(self._build_decorator_relationships(entities))
 
-        # Build method call relationships (if file content provided)
-        if file_content:
-            relationships.extend(self._build_call_relationships(entities, file_content))
+        # Build call relationships
+        relationships.extend(self._build_call_relationships_from_entities(entities))
 
         logger.info(
             "Relationships built",
@@ -125,28 +124,28 @@ class RelationshipBuilder:
 
         return relationships
 
-    def _build_import_relationships(
-        self,
-        entities: List[Dict[str, Any]],
-        imports: Set[str],
-    ) -> List[Dict[str, Any]]:
+    def _build_import_relationships(self, entities, imports):
         relationships = []
 
         if not entities or not imports:
             return relationships
 
-        source_module = entities[0].get("module")
+        source_pkg = entities[0].get("package", "").split(".")[0]
+        if not source_pkg:
+            return relationships
 
         for import_module in imports:
+            target_pkg = import_module.split(".")[0]
+
             relationships.append({
-                "source": source_module,
-                "source_module": source_module,
-                "target": import_module.split(".")[-1],
-                "target_module": import_module,
+                "source": source_pkg,
+                "target": target_pkg,
                 "type": "IMPORTS",
             })
 
         return relationships
+
+
 
 
 
@@ -191,6 +190,39 @@ class RelationshipBuilder:
                     )
 
         return relationships
+
+    def _build_call_relationships_from_entities(
+        self,
+        entities: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        relationships = []
+
+        functions = {
+            e["name"]: e
+            for e in entities
+            if e["type"] == "Function"
+        }
+
+        for func in entities:
+            if func["type"] != "Function":
+                continue
+
+            for called_name in func.get("calls", []):
+                target = functions.get(called_name)
+                if not target:
+                    continue
+
+                relationships.append({
+                    "source": func["name"],
+                    "source_module": func.get("module"),
+                    "target": target["name"],
+                    "target_module": target.get("module"),
+                    "type": "CALLS",
+                    "line_number": func.get("line_number"),
+                })
+
+        return relationships
+
 
     def find_circular_dependencies(
         self,

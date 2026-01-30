@@ -20,6 +20,16 @@ from .logger import get_logger
 
 logger = get_logger(__name__)
 
+class CallVisitor(ast.NodeVisitor):
+    def __init__(self):
+        self.calls = []
+
+    def visit_Call(self, node: ast.Call):
+        if isinstance(node.func, ast.Name):
+            self.calls.append(node.func.id)
+        elif isinstance(node.func, ast.Attribute):
+            self.calls.append(node.func.attr)
+        self.generic_visit(node)
 
 class ASTParser:
     """
@@ -55,6 +65,8 @@ class ASTParser:
             FileParsingError: If parsing fails
         """
         self.current_file = file_path
+        self.current_package = self._extract_package(file_path)
+
         self.current_module_imports = set()
 
         try:
@@ -161,6 +173,7 @@ class ASTParser:
             "line_number": node.lineno,
             "docstring": docstring,
             "bases": bases,
+            "package": self.current_package,
             "decorators": self._get_decorators(node),
         }
         logger.debug("Class extracted", name=node.name)
@@ -171,27 +184,17 @@ class ASTParser:
         self,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> Dict[str, Any]:
-        """
-        Handle FunctionDef or AsyncFunctionDef node.
 
-        Args:
-            node: FunctionDef or AsyncFunctionDef AST node
-
-        Returns:
-            Function entity dictionary
-        """
         docstring = ast.get_docstring(node)
         is_async = isinstance(node, ast.AsyncFunctionDef)
 
-        # Extract parameters
-        params = []
-        for arg in node.args.args:
-            params.append(arg.arg)
+        visitor = CallVisitor()
+        visitor.visit(node)
 
-        # Extract returns annotation
-        returns = None
-        if node.returns:
-            returns = ast.unparse(node.returns)
+        # Extract parameters
+        params = [arg.arg for arg in node.args.args]
+
+        returns = ast.unparse(node.returns) if node.returns else None
 
         entity = {
             "type": "Function",
@@ -202,11 +205,14 @@ class ASTParser:
             "parameters": params,
             "returns": returns,
             "is_async": is_async,
+            "package": self.current_package,
             "decorators": self._get_decorators(node),
+            "calls": visitor.calls,   # ✅ now works
         }
 
         logger.debug("Function extracted", name=node.name, is_async=is_async)
         return entity
+
 
     def _get_decorators(self, node: ast.AST) -> List[str]:
         """
@@ -243,6 +249,24 @@ class ASTParser:
             return str(node.value)
         else:
             return ast.unparse(node)
+
+    def _extract_package(self, file_path: str) -> str:
+        # Find repo root (fastapi/)
+        parts = file_path.replace("\\", "/").split("/")
+
+        if "fastapi" not in parts:
+            return ""
+
+        idx = parts.index("fastapi")
+
+        # fastapi/applications.py → fastapi.applications
+        module_parts = parts[idx:]
+        if module_parts[-1].endswith(".py"):
+            module_parts[-1] = module_parts[-1][:-3]
+
+        return ".".join(module_parts)
+
+
 
     def extract_imports(self, entities: List[Dict[str, Any]]) -> Set[str]:
         """

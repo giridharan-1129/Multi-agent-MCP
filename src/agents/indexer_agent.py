@@ -109,15 +109,56 @@ class IndexRepositoryTool(MCPTool):
                     logger.error("Unexpected error processing file", file=file_path, error=str(e))
 
             # Store in Neo4j
+            # ============================================================================
+            # STEP 2 FIX: Build file-to-package map ONCE, create relationships ONCE
+            # ============================================================================
+            
             # Build entity lookup ONCE
             entity_lookup = {
                 (e["name"], e.get("type")): e.get("module")
                 for e in all_entities
             }
-            # Create File nodes
-            unique_files = {e["module"] for e in all_entities if e.get("module")}
-            for file_path in unique_files:
+
+            # Extract unique packages and files with deterministic mapping
+            packages = set()
+            file_to_package = {}  # file_path -> package_name
+            
+            for entity in all_entities:
+                pkg = entity.get("package")
+                module = entity.get("module")
+                
+                # If package is empty, derive from module path
+                if not pkg and module:
+                    # Extract package from file path: /path/to/module.py → module
+                    pkg = module.split("/")[-1].replace(".py", "")
+                
+                # Only add if we have a valid package and module
+                if pkg and module:
+                    packages.add(pkg)
+                    file_to_package[module] = pkg
+
+            # Create Package nodes first
+            logger.info("Creating Package nodes", count=len(packages))
+            for pkg in packages:
+                await neo4j.create_package_node(pkg)
+
+            # Create File nodes and Package -> File CONTAINS relationships
+            # This is deterministic: each file created once, each CONTAINS created once
+            logger.info("Creating File nodes and CONTAINS relationships", count=len(file_to_package))
+            for file_path, package_name in file_to_package.items():
+                # Create file node (with both path and name properties from Step 1)
                 await neo4j.create_file_node(file_path)
+                
+                # Create CONTAINS relationship
+                await neo4j.create_relationship(
+                    source_name=package_name,
+                    source_label="Package",
+                    target_name=file_path,
+                    target_label="File",
+                    rel_type="CONTAINS",
+                )
+
+
 
             logger.info("Storing entities in Neo4j", count=len(all_entities))
             for entity in all_entities:
@@ -156,7 +197,8 @@ class IndexRepositoryTool(MCPTool):
                                     target_name=entity["name"],
                                     target_module=entity["module"],
                                     rel_type="DEFINES",
-                                )
+                                
+    )
 
                 except Exception as e:
                     logger.error("Error storing entity", entity=entity["name"], error=str(e))
@@ -166,11 +208,6 @@ class IndexRepositoryTool(MCPTool):
             # Store relationships
             logger.info("Storing relationships in Neo4j", count=len(all_relationships))
             for rel in all_relationships:
-                if rel["type"] == "DECORATED_BY":
-                    await neo4j.create_function_node(
-                        name=rel["target"],
-                        module=rel.get("target_module", rel.get("source_module")),
-                    )
                 try:
                     source_module = rel.get("source_module")
                     target_module = rel.get("target_module")
@@ -179,22 +216,52 @@ class IndexRepositoryTool(MCPTool):
                     if target_module is None:
                         target_module = entity_lookup.get(
                             (rel["target"], "Class")
+                            
                         ) or entity_lookup.get(
                             (rel["target"], "Function")
                         )
 
-                    # Skip if we still can’t resolve
+                    # Skip if we still canâ€™t resolve
                     if not source_module or not target_module:
+                        continue
+
+                    LABEL_MAP = {
+                        "IMPORTS": ("Package", "Package"),
+                        "CONTAINS": ("Package", "File"),
+                        "DEFINES": ("File", None),  # handled separately
+                        "CALLS": ("Function", "Function"),
+                        "INHERITS_FROM": ("Class", "Class"),
+                        "DECORATED_BY": ("Function", "Function"),
+                    }
+
+                    source_label, target_label = LABEL_MAP.get(rel["type"], (None, None))
+
+                    if not source_label or not target_label:
+                        continue
+
+                    # Only create relationship if both nodes exist in the database
+                    # This ensures determinism: only successful relationships are created
+                    source_exists = await neo4j.find_entity(rel["source"], source_label)
+                    target_exists = await neo4j.find_entity(rel["target"], target_label)
+                    
+                    if not source_exists or not target_exists:
+                        logger.debug(
+                            "Skipping relationship - node missing",
+                            source=rel["source"],
+                            target=rel["target"],
+                            rel_type=rel["type"],
+                        )
                         continue
 
                     await neo4j.create_relationship(
                         source_name=rel["source"],
-                        source_module=source_module,
+                        source_label=source_label,
                         target_name=rel["target"],
-                        target_module=target_module,
+                        target_label=target_label,
                         rel_type=rel["type"],
                         properties={"line_number": rel.get("line_number")},
                     )
+
 
                 except Exception as e:
                     logger.warning("Failed to store relationship", rel=rel, error=str(e))
