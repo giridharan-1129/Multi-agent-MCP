@@ -74,7 +74,27 @@ class ASTParser:
                 content = f.read()
 
             tree = ast.parse(content, filename=file_path)
-            entities = self._walk_tree(tree)
+
+            entities = []
+
+            # --- MODULE DOCSTRING (NEW) ---
+            module_docstring = ast.get_docstring(tree)
+            if module_docstring:
+                entities.append(
+                    {
+                        "type": "Docstring",
+                        "name": f"{self.current_file}::docstring",
+                        "scope": "module",
+                        "content": module_docstring,
+                        "module": self.current_file,
+                        "package": self.current_package,
+                    }
+                )
+
+
+            # --- EXISTING ENTITY EXTRACTION ---
+            entities.extend(self._walk_tree(tree))
+
 
             logger.info(
                 "File parsed successfully",
@@ -115,9 +135,14 @@ class ASTParser:
                 entities.extend(self._handle_class_with_context(node))
 
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                entity = self._handle_function(node)
-                entity["parent_class"] = None
-                entities.append(entity)
+                function_entities = self._handle_function(node)
+
+                for e in function_entities:
+                    if e["type"] == "Function":
+                        e["parent_class"] = None
+
+                entities.extend(function_entities)
+
 
         return entities
 
@@ -127,14 +152,19 @@ class ASTParser:
         # Push class context
         self.class_stack.append(node.name)
 
-        class_entity = self._handle_class(node)
-        entities.append(class_entity)
+        class_entities = self._handle_class(node)
+        entities.extend(class_entities)
 
         for item in node.body:
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                func = self._handle_function(item)
-                func["parent_class"] = node.name
-                entities.append(func)
+                function_entities = self._handle_function(item)
+
+                for e in function_entities:
+                    if e["type"] == "Function":
+                        e["parent_class"] = node.name
+
+                entities.extend(function_entities)
+
 
         # Pop class context
         self.class_stack.pop()
@@ -153,65 +183,67 @@ class ASTParser:
         if node.module:
             self.current_module_imports.add(node.module)
 
-    def _handle_class(self, node: ast.ClassDef) -> Dict[str, Any]:
-        """
-        Handle ClassDef node.
+    def _handle_class(self, node: ast.ClassDef) -> List[Dict[str, Any]]:
+        entities = []
 
-        Args:
-            node: ClassDef AST node
-
-        Returns:
-            Class entity dictionary
-        """
         docstring = ast.get_docstring(node)
+        if docstring:
+            entities.append({
+                "type": "Docstring",
+                "name": f"{self.current_file}::{node.name}::docstring",
+                "scope": "class",
+                "content": docstring,
+                "module": self.current_file,
+                "package": self.current_package,
+            })
+
         bases = [self._get_name(base) for base in node.bases]
 
-        entity = {
+        entities.append({
             "type": "Class",
             "name": node.name,
             "module": self.current_file,
             "line_number": node.lineno,
-            "docstring": docstring,
             "bases": bases,
             "package": self.current_package,
             "decorators": self._get_decorators(node),
-        }
-        logger.debug("Class extracted", name=node.name)
+        })
 
-        return entity
+        return entities
 
-    def _handle_function(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> Dict[str, Any]:
+
+    def _handle_function(self, node):
+        entities = []
 
         docstring = ast.get_docstring(node)
-        is_async = isinstance(node, ast.AsyncFunctionDef)
+
+        if docstring:
+            entities.append({
+                "type": "Docstring",
+                "name": f"{self.current_file}::{node.name}::docstring",
+                "scope": "function",
+                "content": docstring,
+                "module": self.current_file,
+                "package": self.current_package,
+            })
 
         visitor = CallVisitor()
         visitor.visit(node)
 
-        # Extract parameters
-        params = [arg.arg for arg in node.args.args]
-
-        returns = ast.unparse(node.returns) if node.returns else None
-
-        entity = {
+        entities.append({
             "type": "Function",
             "name": node.name,
             "module": self.current_file,
             "line_number": node.lineno,
-            "docstring": docstring,
-            "parameters": params,
-            "returns": returns,
-            "is_async": is_async,
+            "parameters": [arg.arg for arg in node.args.args],
+            "returns": ast.unparse(node.returns) if node.returns else None,
+            "is_async": isinstance(node, ast.AsyncFunctionDef),
             "package": self.current_package,
             "decorators": self._get_decorators(node),
-            "calls": visitor.calls,   # ✅ now works
-        }
+            "calls": visitor.calls,
+        })
 
-        logger.debug("Function extracted", name=node.name, is_async=is_async)
-        return entity
+        return entities
 
 
     def _get_decorators(self, node: ast.AST) -> List[str]:

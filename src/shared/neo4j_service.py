@@ -134,6 +134,45 @@ class Neo4jService:
                 )
 
         await run_in_threadpool(_run)
+        
+    async def create_docstring_node(
+        self,
+        name: str,
+        content: str,
+        scope: str,
+        module: str,
+        package: Optional[str] = None,
+    ) -> None:
+        """
+        Create a Docstring node.
+
+        Args:
+            name: Unique docstring identifier
+            content: Docstring text
+            scope: Class | Function | Module
+            module: File path
+            package: Package name
+        """
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (d:Docstring {name: $name})
+                    SET d.content = $content,
+                        d.scope = $scope,
+                        d.module = $module,
+                        d.package = $package
+                    """,
+                    {
+                        "name": name,
+                        "content": content,
+                        "scope": scope,
+                        "module": module,
+                        "package": package,
+                    },
+                )
+
+        await run_in_threadpool(_run)
 
     async def create_relationship(
         self,

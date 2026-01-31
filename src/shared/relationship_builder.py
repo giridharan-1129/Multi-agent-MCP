@@ -71,6 +71,7 @@ class RelationshipBuilder:
 
         # Build call relationships
         relationships.extend(self._build_call_relationships_from_entities(entities))
+        relationships.extend(self._build_docstring_relationships(entities))
 
         logger.info(
             "Relationships built",
@@ -233,6 +234,40 @@ class RelationshipBuilder:
                     "type": "CALLS",
                     "line_number": func.get("line_number"),
                 })
+
+        return relationships
+
+    def _build_docstring_relationships(
+        self,
+        entities: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """
+        Build DOCUMENTED_BY relationships between entities and docstrings.
+        """
+        relationships = []
+
+        # Index docstrings by scope + module
+        docstrings = [
+            e for e in entities if e.get("type") == "Docstring"
+        ]
+
+        for entity in entities:
+            if entity["type"] not in {"Class", "Function"}:
+                continue
+
+            for doc in docstrings:
+                # Match scope
+                if doc["scope"] == "module":
+                    continue
+
+                if doc["scope"] == entity["type"].lower() and doc["module"] == entity["module"]:
+                    relationships.append({
+                        "source": entity["name"],
+                        "source_module": entity["module"],
+                        "target": doc["name"],
+                        "target_module": doc["module"],
+                        "type": "DOCUMENTED_BY",
+                    })
 
         return relationships
 

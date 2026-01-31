@@ -202,6 +202,17 @@ class IndexRepositoryTool(MCPTool):
                                 target_module=entity["module"],
                                 target_type="Class",
                             )
+
+                    elif entity["type"] == "Docstring":
+                        await neo4j.create_docstring_node(
+                            name=entity["name"],
+                            content=entity.get("content"),
+                            scope=entity.get("scope"),
+                            module=entity.get("module"),
+                            package=entity.get("package"),
+                        )
+
+
                     elif entity["type"] == "Function":
                             await neo4j.create_function_node(
                                 name=entity["name"],
@@ -265,6 +276,7 @@ class IndexRepositoryTool(MCPTool):
                             "CALLS": ("Function", "Function"),
                             "INHERITS_FROM": ("Class", "Class"),
                             "DECORATED_BY": ("Function", "Function"),
+                            "DOCUMENTED_BY": ("Class", "Docstring"),
                         }
                     # Special handling for CONTAINS (overloaded relationship)
                     if rel["type"] == "CONTAINS":
