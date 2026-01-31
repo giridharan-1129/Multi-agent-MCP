@@ -14,6 +14,9 @@ Example:
         "session_id": "user-123"
     })
 """
+import os
+import json
+from openai import OpenAI
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -41,87 +44,81 @@ class AnalyzeQueryTool(MCPTool):
 
     category: str = "orchestration"
 
-    async def execute(
-        self,
-        query: str,
-        session_id: Optional[str] = None,
-    ) -> ToolResult:
+    async def execute(self, query: str, session_id: str) -> ToolResult:
         """
-        Analyze a query.
-
-        Args:
-            query: User query
-            session_id: Optional session ID for context
-
-        Returns:
-            ToolResult with query analysis
+        Analyze user query using LLM to extract intent and entities.
+        Falls back to rule-based logic if LLM fails.
         """
+        logger.info(
+            "Starting LLM-based query analysis",
+            session_id=session_id,
+            query=query,
+        )
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        system_prompt = (
+            "You are an intent classifier for a FastAPI codebase assistant.\n\n"
+            "Return ONLY valid JSON with the following schema:\n"
+            "{\n"
+            '  "intent": "graph_query | code_explanation | dependency_analysis | indexing | general",\n'
+            '  "primary_agent": "graph_query | code_analyst | indexer",\n'
+            '  "secondary_agents": ["graph_query", "code_analyst"],\n'
+            '  "entities": {\n'
+            '    "classes": [],\n'
+            '    "functions": [],\n'
+            '    "modules": []\n'
+            "  }\n"
+            "}\n\n"
+            "Do not include markdown. Do not include explanations."
+        )
+
         try:
-            # Determine intent based on keywords
-            query_lower = query.lower()
-
-            intent = "general"
-            if any(word in query_lower for word in ["import", "depend", "relation"]):
-                intent = "dependency_analysis"
-            elif any(word in query_lower for word in ["how", "work", "explain"]):
-                intent = "explanation"
-            elif any(word in query_lower for word in ["find", "search", "show", "list"]):
-                intent = "search"
-            elif any(word in query_lower for word in ["pattern", "design", "architecture"]):
-                intent = "pattern_analysis"
-            elif any(word in query_lower for word in ["compare", "difference", "vs"]):
-                intent = "comparison"
-
-            # Extract entities (basic keyword extraction)
-            entities = []
-            keywords = [
-                "FastAPI", "APIRouter", "Depends", "Request", "Response",
-                "HTTPException", "Starlette", "Pydantic", "openapi",
-                "decorator", "middleware", "route", "endpoint",
-            ]
-            for keyword in keywords:
-                if keyword.lower() in query_lower:
-                    entities.append(keyword)
-
-            # Determine which agents to use
-            required_agents = ["graph_query"]  # Always use graph query
-
-            if intent in ["explanation", "pattern_analysis", "comparison"]:
-                required_agents.append("code_analyst")
-
-            if intent == "dependency_analysis":
-                required_agents.extend(["graph_query", "code_analyst"])
-
-            if "index" in query_lower or "repository" in query_lower:
-                required_agents.append("indexer")
-
-            analysis = QueryAnalysis(
-                query=query,
-                intent=intent,
-                entities=entities,
-                required_agents=list(set(required_agents)),
-                context_needed=session_id is not None,
-                follow_up=False,
-                confidence=0.8,
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query},
+                ],
+                temperature=0,
             )
 
+            content = response.choices[0].message.content
+            analysis = json.loads(content)
+
             logger.info(
-                "Query analyzed",
-                intent=intent,
-                agents=analysis.required_agents,
-                entities=len(entities),
+                "LLM intent analysis successful",
+                session_id=session_id,
+                analysis=analysis,
             )
 
             return ToolResult(
                 success=True,
-                data=analysis.dict(),
+                data=analysis,
             )
 
         except Exception as e:
-            logger.error(f"Failed to analyze query: {e}")
-            return ToolResult(
-                success=False,
+            logger.error(
+                "LLM intent analysis failed, falling back to rule-based analysis",
+                session_id=session_id,
                 error=str(e),
+            )
+
+            # 🔁 RULE-BASED FALLBACK (SAFE DEFAULT)
+            fallback_analysis = {
+                "intent": "general",
+                "primary_agent": "graph_query",
+                "secondary_agents": [],
+                "entities": {
+                    "classes": [],
+                    "functions": [],
+                    "modules": [],
+                },
+            }
+
+            return ToolResult(
+                success=True,
+                data=fallback_analysis,
             )
 
     def get_definition(self) -> ToolDefinition:
@@ -542,39 +539,113 @@ class OrchestratorAgent(BaseAgent):
             "data": analysis.data,
         }
 
-        # 2️⃣ Call GraphQueryAgent (NOT execute_tool)
-        graph_agent = self.graph_query_agent
+        # 🧭 Decide routing based on LLM analysis
+        analysis_data = analysis.data or {}
 
-        graph_result = await self.graph_query_agent.execute_tool(
-                "search_entities",
-                {
+        primary_agent = analysis_data.get("primary_agent")
+        secondary_agents = set(analysis_data.get("secondary_agents", []))
+        intent = analysis_data.get("intent")
+
+        call_graph_agent = (
+            primary_agent == "graph_query"
+            or "graph_query" in secondary_agents
+        )
+
+        call_code_agent = (
+            primary_agent == "code_analyst"
+            or "code_analyst" in secondary_agents
+            or intent in {"code_explanation", "dependency_analysis"}
+        )
+
+
+        agent_outputs = {}
+
+        # 2️⃣ Call GraphQueryAgent (if required)
+        if call_graph_agent:
+            safe_graph_result = await self._safe_execute_agent(
+                agent_name="graph_query",
+                agent_callable=self.graph_query_agent.execute_tool,
+                tool_name="search_entities",
+                arguments={
                     "pattern": "FastAPI"
-                }
+                },
             )
 
+            if safe_graph_result["success"]:
+                graph_result = safe_graph_result["data"]
+                agent_outputs["graph_query"] = graph_result.data
 
+                yield {
+                    "type": "context",
+                    "agent": "graph_query",
+                    "data": graph_result.data,
+                }
+            else:
+                yield {
+                    "type": "warning",
+                    "agent": "graph_query",
+                    "error": safe_graph_result["error"],
+                }
 
-        yield {
-            "type": "context",
-            "agent": "graph_query",
-            "data": graph_result.data,
-        }
+        # 3️⃣ Call CodeAnalystAgent (if required)
+        if call_code_agent:
+            # Try to extract a function or class name from LLM analysis
+            entities = analysis_data.get("entities", {})
+            function_names = entities.get("functions", [])
+            class_names = entities.get("classes", [])
 
-        # 3️⃣ TEMP token stream
-        for word in str(graph_result.data).split():
+            if function_names:
+                tool_name = "analyze_function"
+                arguments = {"name": function_names[0]}
+            elif class_names:
+                tool_name = "analyze_class"
+                arguments = {"name": class_names[0]}
+            else:
+                yield {
+                    "type": "warning",
+                    "agent": "code_analyst",
+                    "error": "No specific function or class identified for code analysis",
+                }
+                tool_name = None
+
+            if tool_name:
+                safe_code_result = await self._safe_execute_agent(
+                    agent_name="code_analyst",
+                    agent_callable=self.code_analyst_agent.execute_tool,
+                    tool_name=tool_name,
+                    arguments=arguments,
+                )
+
+                if safe_code_result["success"]:
+                    code_result = safe_code_result["data"]
+                    agent_outputs["code_analyst"] = code_result.data
+
+                    yield {
+                        "type": "context",
+                        "agent": "code_analyst",
+                        "data": code_result.data,
+                    }
+                else:
+                    yield {
+                        "type": "warning",
+                        "agent": "code_analyst",
+                        "error": safe_code_result["error"],
+                    }
+
+        # 4️⃣ Fail gracefully if no agents succeeded
+        if not agent_outputs:
             yield {
-                "type": "token",
-                "value": word + " "
+                "type": "final",
+                "error": "No agents were able to process the request",
             }
+            return
 
-        # 4️⃣ Final synthesis
+        # 5️⃣ Final synthesis
         synthesis = await self.execute_tool(
             "synthesize_response",
             {
-                "agent_outputs": {
-                    "graph_query": graph_result.data
-                },
-                "original_query": query
+                "agent_outputs": agent_outputs,
+                "original_query": query,
             }
         )
 
@@ -582,7 +653,36 @@ class OrchestratorAgent(BaseAgent):
             "type": "final",
             "data": synthesis.data,
         }
-
+    async def _safe_execute_agent(
+        self,
+        agent_name: str,
+        agent_callable,
+        *,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Safely execute an agent tool and capture failures without breaking orchestration.
+        """
+        try:
+            result = await agent_callable(tool_name, arguments)
+            return {
+                "success": True,
+                "data": result,
+                "error": None,
+            }
+        except Exception as e:
+            logger.error(
+                "Agent execution failed",
+                agent=agent_name,
+                tool=tool_name,
+                error=str(e),
+            )
+            return {
+                "success": False,
+                "data": None,
+                "error": str(e),
+            }
 
     async def startup(self) -> None:
         """Start the orchestrator agent."""

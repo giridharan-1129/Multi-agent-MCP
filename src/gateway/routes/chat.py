@@ -79,9 +79,37 @@ async def chat(request: ChatRequest):
 
         # For now, create a simple response
         # In a full implementation, would call other agents based on analysis
-        response_text = f"I analyzed your query about {', '.join(analysis.get('entities', ['code']))}. "
-        response_text += f"This appears to be a {analysis.get('intent', 'general')} question. "
-        response_text += f"I would route this to: {', '.join(agents_used)}."
+        # 🔁 Execute orchestrator stream
+        final_response = None
+
+        async for event in orchestrator.stream(request.query):
+            if event["type"] == "final":
+                if "data" in event:
+                    final_response = event["data"].get("synthesis")
+                elif "error" in event:
+                    raise HTTPException(status_code=500, detail=event["error"])
+
+        if not final_response:
+            raise HTTPException(status_code=500, detail="No response generated")
+
+        # Add assistant message to conversation
+        await orchestrator.execute_tool(
+            "add_conversation_message",
+            {
+                "session_id": session_id,
+                "role": "assistant",
+                "content": final_response,
+                "agent_name": "orchestrator",
+            },
+        )
+
+        return ChatResponse(
+            session_id=session_id,
+            response=final_response,
+            agents_used=["orchestrator"],
+            correlation_id=correlation_id,
+        )
+
 
         # Add assistant message to conversation
         await orchestrator.execute_tool(
