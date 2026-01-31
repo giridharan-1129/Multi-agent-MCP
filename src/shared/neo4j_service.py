@@ -28,27 +28,33 @@ class Neo4jService:
         self.password = password
         self.database = database
         self.driver = None
-
+        
     async def connect(self) -> bool:
-        """Connect to Neo4j."""
-        try:
-            from neo4j import GraphDatabase
-            
-            self.driver = GraphDatabase.driver(
-                self.uri,
-                auth=(self.username, self.password)
-            )
-            
-            # Test connection
-            with self.driver.session(database=self.database) as session:
-                session.run("RETURN 1")
-            
-            logger.info(f"Connected to Neo4j: {self.uri}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to connect to Neo4j: {str(e)}")
-            return False
+        from neo4j import GraphDatabase
+        import asyncio
+
+        retries = 10
+        delay = 2
+
+        for attempt in range(1, retries + 1):
+            try:
+                self.driver = GraphDatabase.driver(
+                    self.uri,
+                    auth=(self.username, self.password)
+                )
+
+                with self.driver.session(database=self.database) as session:
+                    session.run("RETURN 1")
+
+                logger.info(f"Connected to Neo4j: {self.uri}")
+                return True
+
+            except Exception as e:
+                logger.warning(f"Failed to connect to Neo4j: {e}")
+                await asyncio.sleep(delay)
+
+        logger.error("Neo4j connection failed after retries")
+        return False
 
     async def close(self) -> None:
         """Close Neo4j connection."""
@@ -364,30 +370,59 @@ class Neo4jService:
             return []
 
     async def get_relationships(self, entity_name: str, relationship_type: str = None) -> List[Dict]:
-        """Get all entities related by a specific relationship type."""
         def _run():
             with self.driver.session(database=self.database) as session:
-                # Smart CONTAINS: Class/Function -> File -> Package
-                if relationship_type == "CONTAINS":
+                # === BELONGS_TO (upward ownership) ===
+                if relationship_type == "BELONGS_TO":
                     cypher = """
                     MATCH (e {name: $name})<-[:DEFINES]-(f:File)<-[:CONTAINS]-(p:Package)
                     RETURN {
                         target_name: p.name,
                         target_type: "Package",
-                        relationship_type: "CONTAINS",
+                        relationship_type: "BELONGS_TO",
                         target_module: null
                     } AS relationship
                     """
                     result = session.run(cypher, {"name": entity_name})
                     return [r["relationship"] for r in result]
 
-                # Default behavior (bidirectional)
+
+                # === CONTAINS (polymorphic, correct) ===
+                # Smart CONTAINS
+                if relationship_type == "CONTAINS":
+                    cypher = """
+                    MATCH (p:Package {name: $name})-[:CONTAINS]->(f:File)
+                    RETURN {
+                        target_name: f.path,
+                        target_type: "File",
+                        relationship_type: "CONTAINS",
+                        target_module: f.path
+                    } AS relationship
+                    """
+                    result = session.run(cypher, {"name": entity_name})
+                    return [r["relationship"] for r in result]
+
+                # === DEFINES (File → Class/Function ONLY) ===
+                if relationship_type == "DEFINES":
+                    cypher = """
+                    MATCH (f:File {path: $name})-[:DEFINES]->(e)
+                    RETURN {
+                        target_name: e.name,
+                        target_type: labels(e)[0],
+                        relationship_type: "DEFINES",
+                        target_module: e.module
+                    } AS relationship
+                    """
+                    result = session.run(cypher, {"name": entity_name})
+                    return [r["relationship"] for r in result]
+
+                # === Other relationships (bidirectional) ===
                 if relationship_type:
                     cypher = """
                     MATCH (e {name: $name})-[r]-(other)
                     WHERE type(r) = $rel
                     RETURN {
-                        target_name: other.name,
+                        target_name: coalesce(other.name, other.path),
                         target_type: labels(other)[0],
                         relationship_type: type(r),
                         target_module: other.module
@@ -401,7 +436,7 @@ class Neo4jService:
                     cypher = """
                     MATCH (e {name: $name})-[r]-(other)
                     RETURN {
-                        target_name: other.name,
+                        target_name: coalesce(other.name, other.path),
                         target_type: labels(other)[0],
                         relationship_type: type(r),
                         target_module: other.module
@@ -411,11 +446,7 @@ class Neo4jService:
 
                 return [r["relationship"] for r in result]
 
-        try:
-            return await run_in_threadpool(_run)
-        except Exception as e:
-            logger.error(f"Failed to get relationships: {str(e)}")
-            return []
+        return await run_in_threadpool(_run)
 
 
     async def get_graph_statistics(self) -> Dict[str, Any]:

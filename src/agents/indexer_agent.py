@@ -77,6 +77,9 @@ class IndexRepositoryTool(MCPTool):
             parsing_errors = 0
 
             for file_path in python_files:
+                if "/tests/" in file_path:
+                    continue
+
                 try:
                     # Read file content
                     content = downloader.read_file(file_path)
@@ -126,26 +129,49 @@ class IndexRepositoryTool(MCPTool):
             for entity in all_entities:
                 pkg = entity.get("package")
                 module = entity.get("module")
+
+                # derive hierarchical packages
+                if pkg:
+                    parts = pkg.split(".")
+                    for i in range(1, len(parts) + 1):
+                        packages.add(".".join(parts[:i]))
+
                 
                 # If package is empty, derive from module path
-                if not pkg and module:
-                    # Extract package from file path: /path/to/module.py → module
-                    pkg = module.split("/")[-1].replace(".py", "")
+                # If package is empty, SKIP (do not invent fake packages)
+                if not pkg:
+                    continue
+
                 
                 # Only add if we have a valid package and module
+                # Only map file to its immediate package
                 if pkg and module:
-                    packages.add(pkg)
                     file_to_package[module] = pkg
+
 
             # Create Package nodes first
             logger.info("Creating Package nodes", count=len(packages))
             for pkg in packages:
                 await neo4j.create_package_node(pkg)
+                # create Package -> Package CONTAINS hierarchy
+            for pkg in packages:
+                if "." in pkg and pkg.startswith("fastapi."):
+                    parent = pkg.rsplit(".", 1)[0]
+                    await neo4j.create_relationship(
+                        source_name=parent,
+                        source_label="Package",
+                                    target_name=pkg,
+                                    target_label="Package",
+                                    rel_type="CONTAINS",
+                                )
+
 
             # Create File nodes and Package -> File CONTAINS relationships
             # This is deterministic: each file created once, each CONTAINS created once
             logger.info("Creating File nodes and CONTAINS relationships", count=len(file_to_package))
             for file_path, package_name in file_to_package.items():
+                if not package_name.startswith("fastapi"):
+                    continue
                 # Create file node (with both path and name properties from Step 1)
                 await neo4j.create_file_node(file_path)
                 
@@ -191,13 +217,16 @@ class IndexRepositoryTool(MCPTool):
                                 target_type="Function",
                             )
                             if entity.get("parent_class"):
+                                # Class -> Function CONTAINS
                                 await neo4j.create_relationship(
                                     source_name=entity["parent_class"],
                                     source_label="Class",
                                     target_name=entity["name"],
                                     target_label="Function",
-                                    rel_type="DEFINES",
+                                    rel_type="CONTAINS",
                                 )
+
+
 
                 except Exception as e:
                     logger.error("Error storing entity", entity=entity["name"], error=str(e))
@@ -207,6 +236,10 @@ class IndexRepositoryTool(MCPTool):
             # Store relationships
             logger.info("Storing relationships in Neo4j", count=len(all_relationships))
             for rel in all_relationships:
+                if rel["type"] == "IMPORTS":
+                    await neo4j.create_package_node(rel["source"])
+                    await neo4j.create_package_node(rel["target"])
+
                 try:
                     source_module = rel.get("source_module")
                     target_module = rel.get("target_module")
@@ -220,37 +253,51 @@ class IndexRepositoryTool(MCPTool):
                             (rel["target"], "Function")
                         )
 
-                    # Skip if we still canâ€™t resolve
-                    if not source_module or not target_module:
+                    # Skip unresolved modules EXCEPT for CONTAINS and IMPORTS
+                    if rel["type"] not in {"CONTAINS", "IMPORTS"} and (not source_module or not target_module):
                         continue
 
-                    LABEL_MAP = {
-                        "IMPORTS": ("Package", "Package"),
-                        "CONTAINS": ("Package", "File"),
-                        "DEFINES": ("File", None),  # handled separately
-                        "CALLS": ("Function", "Function"),
-                        "INHERITS_FROM": ("Class", "Class"),
-                        "DECORATED_BY": ("Function", "Function"),
-                    }
 
-                    source_label, target_label = LABEL_MAP.get(rel["type"], (None, None))
+
+                    LABEL_MAP = {
+                            "IMPORTS": ("Package", "Package"),
+                            "DEFINES": ("File", None),
+                            "CALLS": ("Function", "Function"),
+                            "INHERITS_FROM": ("Class", "Class"),
+                            "DECORATED_BY": ("Function", "Function"),
+                        }
+                    # Special handling for CONTAINS (overloaded relationship)
+                    if rel["type"] == "CONTAINS":
+                        # Class -> Function
+                        if rel["source"] in [e["name"] for e in all_entities if e["type"] == "Class"]:
+                            source_label = "Class"
+                            target_label = "Function"
+                        # Package -> File
+                        else:
+                            source_label = "Package"
+                            target_label = "File"
+                    else:
+                        source_label, target_label = LABEL_MAP.get(rel["type"], (None, None))
 
                     if not source_label or not target_label:
                         continue
 
                     # Only create relationship if both nodes exist in the database
                     # This ensures determinism: only successful relationships are created
-                    source_exists = await neo4j.find_entity(rel["source"], source_label)
-                    target_exists = await neo4j.find_entity(rel["target"], target_label)
-                    
-                    if not source_exists or not target_exists:
-                        logger.debug(
-                            "Skipping relationship - node missing",
-                            source=rel["source"],
-                            target=rel["target"],
-                            rel_type=rel["type"],
-                        )
-                        continue
+                    # Skip existence check for IMPORTS (packages are guaranteed to exist)
+                    if rel["type"] != "IMPORTS":
+                        source_exists = await neo4j.find_entity(rel["source"], source_label)
+                        target_exists = await neo4j.find_entity(rel["target"], target_label)
+
+                        if not source_exists or not target_exists:
+                            logger.debug(
+                                "Skipping relationship - node missing",
+                                source=rel["source"],
+                                target=rel["target"],
+                                rel_type=rel["type"],
+                            )
+                            continue
+
 
                     await neo4j.create_relationship(
                         source_name=rel["source"],

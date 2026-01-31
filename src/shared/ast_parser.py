@@ -251,20 +251,25 @@ class ASTParser:
             return ast.unparse(node)
 
     def _extract_package(self, file_path: str) -> str:
-        # Find repo root (fastapi/)
         parts = file_path.replace("\\", "/").split("/")
 
+        # Find the *project* fastapi directory
         if "fastapi" not in parts:
             return ""
 
-        idx = parts.index("fastapi")
+        # Use the LAST occurrence of "fastapi"
+        idx = len(parts) - 1 - parts[::-1].index("fastapi")
 
-        # fastapi/applications.py → fastapi.applications
-        module_parts = parts[idx:]
-        if module_parts[-1].endswith(".py"):
-            module_parts[-1] = module_parts[-1][:-3]
+        # Everything after this fastapi/ is the Python package
+        package_parts = parts[idx:-1]
 
-        return ".".join(module_parts)
+        if not package_parts:
+            return ""
+
+        return ".".join(package_parts)
+
+
+
 
 
 

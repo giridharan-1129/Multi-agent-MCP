@@ -53,26 +53,35 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Neo4j service initialized")
 
-        # Initialize agents
+        # 1️⃣ Create agents FIRST
         orchestrator = OrchestratorAgent()
-        await orchestrator.startup()
-        
         indexer = IndexerAgent()
-        await indexer.startup()
-        
         graph_query = GraphQueryAgent()
-        await graph_query.startup()
-        
         code_analyst = CodeAnalystAgent()
+
+        # 2️⃣ Start agents
+        await orchestrator.startup()
+        await indexer.startup()
+        await graph_query.startup()
         await code_analyst.startup()
-        
-        # Store in dependencies
+
+        # 3️⃣ Wire dependencies (DI)
+        orchestrator.graph_query_agent = graph_query
+        orchestrator.code_analyst_agent = code_analyst
+        orchestrator.indexer_agent = indexer
+
+        # 4️⃣ Store globally
         init_agents(orchestrator, indexer, graph_query, code_analyst)
-        
+
+        # 5️⃣ WebSocket wiring
+        from .websocket_manager import ws_manager
+        ws_manager.set_orchestrator(orchestrator)
+
+
         logger.info("All agents started")
 
-    except Exception as e:
-        logger.error("Failed to start gateway", error=str(e))
+    except Exception:
+        logger.exception("Failed to start gateway")
         raise
 
     yield

@@ -78,6 +78,16 @@ class RelationshipBuilder:
             inheritance=len([r for r in relationships if r["type"] == "INHERITS_FROM"]),
             imports=len([r for r in relationships if r["type"] == "IMPORTS"]),
         )
+        # Build class → function CONTAINS relationships
+        for entity in entities:
+            if entity["type"] == "Function" and entity.get("parent_class"):
+                relationships.append({
+                    "source": entity["parent_class"],
+                    "target": entity["name"],
+                    "type": "CONTAINS",
+                    "source_module": entity.get("module"),
+                    "target_module": entity.get("module"),
+                })
 
         return relationships
 
@@ -130,20 +140,23 @@ class RelationshipBuilder:
         if not entities or not imports:
             return relationships
 
-        source_pkg = entities[0].get("package", "").split(".")[0]
+        source_pkg = entities[0].get("package")
         if not source_pkg:
             return relationships
 
         for import_module in imports:
-            target_pkg = import_module.split(".")[0]
+            # Only keep internal fastapi imports
+            if not import_module.startswith("fastapi"):
+                continue
 
             relationships.append({
                 "source": source_pkg,
-                "target": target_pkg,
+                "target": import_module,
                 "type": "IMPORTS",
             })
 
         return relationships
+
 
 
 

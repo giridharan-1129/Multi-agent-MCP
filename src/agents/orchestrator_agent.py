@@ -18,7 +18,6 @@ Example:
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
-
 from ..shared.base_agent import BaseAgent
 from ..shared.logger import get_logger
 from ..shared.mcp_types import (
@@ -119,7 +118,7 @@ class AnalyzeQueryTool(MCPTool):
             )
 
         except Exception as e:
-            logger.error("Failed to analyze query", error=str(e))
+            logger.error(f"Failed to analyze query: {e}")
             return ToolResult(
                 success=False,
                 error=str(e),
@@ -528,6 +527,62 @@ class OrchestratorAgent(BaseAgent):
     async def initialize(self) -> None:
         """Initialize orchestrator agent resources."""
         logger.info("Orchestrator agent ready")
+
+    async def stream(self, query: str):
+        session_id = str(uuid4())
+
+        # 1️⃣ Analyze query
+        analysis = await self.execute_tool(
+            "analyze_query",
+            {"query": query, "session_id": session_id}
+        )
+
+        yield {
+            "type": "analysis",
+            "data": analysis.data,
+        }
+
+        # 2️⃣ Call GraphQueryAgent (NOT execute_tool)
+        graph_agent = self.graph_query_agent
+
+        graph_result = await self.graph_query_agent.execute_tool(
+                "search_entities",
+                {
+                    "pattern": "FastAPI"
+                }
+            )
+
+
+
+        yield {
+            "type": "context",
+            "agent": "graph_query",
+            "data": graph_result.data,
+        }
+
+        # 3️⃣ TEMP token stream
+        for word in str(graph_result.data).split():
+            yield {
+                "type": "token",
+                "value": word + " "
+            }
+
+        # 4️⃣ Final synthesis
+        synthesis = await self.execute_tool(
+            "synthesize_response",
+            {
+                "agent_outputs": {
+                    "graph_query": graph_result.data
+                },
+                "original_query": query
+            }
+        )
+
+        yield {
+            "type": "final",
+            "data": synthesis.data,
+        }
+
 
     async def startup(self) -> None:
         """Start the orchestrator agent."""
