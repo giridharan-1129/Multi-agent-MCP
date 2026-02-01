@@ -66,14 +66,62 @@ class AnalyzeFunctionTool(MCPTool):
             results = await neo4j.execute_query(query, {"name": name})
 
             if not results:
+                suggestion_query = """
+                MATCH (f:Function)
+                WHERE f.name CONTAINS $name
+                RETURN f.name AS name, f.module AS module
+                LIMIT 5
+                """
+                suggestions = await neo4j.execute_query(
+                    suggestion_query, {"name": name}
+                )
+
                 logger.info("Function not found", name=name)
+
                 return ToolResult(
                     success=False,
                     error=f"Function '{name}' not found",
+                    data={
+                        "reason": "No matching Function node exists in the indexed repository.",
+                        "note": "Tool names and code function names are different concepts.",
+                        "suggestions": suggestions or [],
+                        "next_action": "Retry with one of the suggested function names."
+                    },
                 )
+
 
             result = results[0]
             function = result["function"]
+
+            callers = result.get("callers", [])
+            called_functions = result.get("called_functions", [])
+
+            # --- Semantic analysis (graph + metadata based) ---
+            control_flow = {
+                "fan_in": len(callers),
+                "fan_out": len(called_functions),
+                "is_entry_point": len(callers) == 0,
+                "is_orchestrator": len(called_functions) >= 3,
+            }
+
+            side_effects = {
+                "likely_io": any(
+                    kw in (function.get("name") or "").lower()
+                    for kw in ["read", "write", "load", "save", "fetch", "request"]
+                ),
+                "likely_db_access": any(
+                    kw in (function.get("name") or "").lower()
+                    for kw in ["query", "insert", "update", "delete"]
+                ),
+            }
+
+            # --- Complexity estimation (heuristic, explainable) ---
+            if control_flow["is_orchestrator"]:
+                estimated_complexity = "O(n) – coordination-heavy"
+            elif len(function.get("parameters", [])) > 4:
+                estimated_complexity = "O(n) – parameter-heavy"
+            else:
+                estimated_complexity = "O(1) – simple logic"
 
             analysis = {
                 "name": function.get("name"),
@@ -84,15 +132,20 @@ class AnalyzeFunctionTool(MCPTool):
                 "parameters": function.get("parameters", []),
                 "returns": function.get("returns"),
                 "decorators": function.get("decorators", []),
-                "callers": result.get("callers", []),
-                "called_functions": result.get("called_functions", []),
-                "complexity_indicators": {
-                    "has_docstring": bool(function.get("docstring")),
-                    "is_async": function.get("is_async", False),
-                    "decorator_count": len(function.get("decorators", [])),
-                    "parameter_count": len(function.get("parameters", [])),
+                "callers": callers,
+                "called_functions": called_functions,
+                "analysis": {
+                    "control_flow": control_flow,
+                    "side_effects": side_effects,
+                    "estimated_complexity": estimated_complexity,
                 },
+                "insight": (
+                    "This function acts as an orchestration layer coordinating multiple calls."
+                    if control_flow["is_orchestrator"]
+                    else "This function appears to be a leaf-level implementation."
+                ),
             }
+
 
             logger.info("Function analyzed", name=name)
             return ToolResult(

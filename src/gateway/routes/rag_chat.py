@@ -5,8 +5,10 @@ Retrieves relevant context from knowledge graph before generating responses.
 """
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-
+from openai import OpenAI
+import os
+from pydantic import BaseModel, ConfigDict
+from typing import Optional
 from ...shared.logger import get_logger, generate_correlation_id, set_correlation_id
 from ...shared.neo4j_service import get_neo4j_service
 from ..dependencies import get_orchestrator
@@ -15,11 +17,16 @@ logger = get_logger(__name__)
 router = APIRouter(tags=["rag_chat"], prefix="/api")
 
 
+
+
 class RAGChatRequest(BaseModel):
     """RAG chat request."""
     query: str
-    session_id: str = None
+    session_id: Optional[str] = None
     retrieve_limit: int = 5
+
+    model_config = ConfigDict(extra="ignore")
+
 
 
 class RAGChatResponse(BaseModel):
@@ -59,11 +66,31 @@ async def rag_chat(request: RAGChatRequest):
         
         # Step 1: Retrieve relevant context from knowledge graph
         logger.info("Retrieving context from knowledge graph", query=request.query)
-        retrieved_entities = await neo4j.search_entities(
-            request.query, 
-            limit=request.retrieve_limit
-        )
-        
+
+        # Simple keyword extraction (defensible baseline)
+        keywords = [
+            word.strip().lower()
+            for word in request.query.split()
+            if len(word) > 4
+        ]
+
+        retrieved_entities = []
+        seen = set()
+
+        for keyword in keywords:
+            results = await neo4j.search_entities(keyword, limit=request.retrieve_limit)
+
+            for entity in results:
+                key = (entity.get("type"), entity.get("name"))
+                if key not in seen:
+                    seen.add(key)
+                    retrieved_entities.append(entity)
+
+            if len(retrieved_entities) >= request.retrieve_limit:
+                break
+
+        retrieved_entities = retrieved_entities[: request.retrieve_limit]
+
         logger.info("Entities retrieved", count=len(retrieved_entities))
         
         # Step 2: Create or get session
@@ -114,13 +141,39 @@ async def rag_chat(request: RAGChatRequest):
                 if entity.get('module'):
                     context_text += f"\n   Location: {entity['module']}"
         
-        # Step 6: Generate response
-        response_text = f"I analyzed your query about {', '.join(analysis.get('entities', ['code']))}."
-        response_text += f"\n\nThis appears to be a {analysis.get('intent', 'general')} question."
-        response_text += f"\n\nI would route this to: {', '.join(agents_used)}."
-        
-        if retrieved_entities:
-            response_text += context_text
+        # Step 6: Generate response using RAG
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+        system_prompt = (
+            "You are a senior software engineer assistant with access to a code knowledge graph.\n"
+            "Answer the user's question using ONLY the provided context.\n\n"
+            "If the context does NOT fully answer the question:\n"
+            "1. Briefly summarize what relevant information *was* found.\n"
+            "2. Explain what specific information is missing.\n"
+            "3. State clearly why a complete answer cannot be given.\n"
+            "Do NOT hallucinate or use outside knowledge."
+        )
+
+
+        user_prompt = f"""
+        User Question:
+        {request.query}
+
+        Retrieved Context:
+        {context_text if context_text else "No relevant context found."}
+        """
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+
+        response_text = completion.choices[0].message.content
+
         
         # Step 7: Add assistant message to conversation
         await orchestrator.execute_tool(

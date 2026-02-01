@@ -561,13 +561,30 @@ class OrchestratorAgent(BaseAgent):
         agent_outputs = {}
 
         # 2️⃣ Call GraphQueryAgent (if required)
-        if call_graph_agent:
+                # Use query-aware search instead of hardcoded pattern
+        search_terms = []
+
+        entities = analysis_data.get("entities", {})
+        search_terms.extend(entities.get("modules", []))
+        search_terms.extend(entities.get("classes", []))
+        search_terms.extend(entities.get("functions", []))
+
+        # Fallback: extract meaningful words from query
+        if not search_terms:
+            search_terms = [
+                word for word in query.split()
+                if len(word) > 5
+            ]
+
+        agent_outputs = {}
+
+        for term in search_terms:
             safe_graph_result = await self._safe_execute_agent(
                 agent_name="graph_query",
                 agent_callable=self.graph_query_agent.execute_tool,
                 tool_name="search_entities",
                 arguments={
-                    "pattern": "FastAPI"
+                    "pattern": term
                 },
             )
 
@@ -580,12 +597,8 @@ class OrchestratorAgent(BaseAgent):
                     "agent": "graph_query",
                     "data": graph_result.data,
                 }
-            else:
-                yield {
-                    "type": "warning",
-                    "agent": "graph_query",
-                    "error": safe_graph_result["error"],
-                }
+                break
+
 
         # 3️⃣ Call CodeAnalystAgent (if required)
         if call_code_agent:
@@ -666,11 +679,27 @@ class OrchestratorAgent(BaseAgent):
         """
         try:
             result = await agent_callable(tool_name, arguments)
+
+            # 🔒 Respect ToolResult.success
+            if hasattr(result, "success") and not result.success:
+                logger.warning(
+                    "Agent tool returned failure",
+                    agent=agent_name,
+                    tool=tool_name,
+                    error=result.error,
+                )
+                return {
+                    "success": False,
+                    "data": None,
+                    "error": result.error or "Agent tool execution failed",
+                }
+
             return {
                 "success": True,
                 "data": result,
                 "error": None,
             }
+
         except Exception as e:
             logger.error(
                 "Agent execution failed",
@@ -683,6 +712,7 @@ class OrchestratorAgent(BaseAgent):
                 "data": None,
                 "error": str(e),
             }
+
 
     async def startup(self) -> None:
         """Start the orchestrator agent."""
