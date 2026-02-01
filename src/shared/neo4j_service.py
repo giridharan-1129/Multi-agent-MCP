@@ -134,7 +134,47 @@ class Neo4jService:
                 )
 
         await run_in_threadpool(_run)
-        
+
+    async def create_method_node(self, name, module, docstring, line_number, is_async):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                            """
+                            MERGE (m:Method {name: $name, module: $module})
+                            SET m.docstring = $docstring,
+                                m.line_number = $line_number,
+                                m.is_async = $is_async
+                            """,
+                            {
+                                "name": name,
+                                "module": module,
+                                "docstring": docstring,
+                                "line_number": line_number,
+                                "is_async": is_async,
+                            }
+                        )
+
+        await run_in_threadpool(_run)
+
+    async def create_parameter_node(self, name, param_name, module):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run("""
+                MERGE (p:Parameter {name: $name})
+                SET p.param_name = $param_name,
+                    p.module = $module
+                """, locals())
+        await run_in_threadpool(_run)
+
+    async def create_type_node(self, name):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run("""
+                MERGE (t:Type {name: $name})
+                """, {"name": name})
+        await run_in_threadpool(_run)
+
+
     async def create_docstring_node(
         self,
         name: str,

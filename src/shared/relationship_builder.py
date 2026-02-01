@@ -72,6 +72,9 @@ class RelationshipBuilder:
         # Build call relationships
         relationships.extend(self._build_call_relationships_from_entities(entities))
         relationships.extend(self._build_docstring_relationships(entities))
+        relationships.extend(self._build_method_relationships(entities))
+        relationships.extend(self._build_parameter_relationships(entities))
+        relationships.extend(self._build_return_relationships(entities))
 
         logger.info(
             "Relationships built",
@@ -159,9 +162,47 @@ class RelationshipBuilder:
         return relationships
 
 
+    def _build_method_relationships(self, entities):
+        relationships = []
+
+        for e in entities:
+            if e["type"] == "Method" and e.get("parent_class"):
+                relationships.append({
+                    "source": e["parent_class"],
+                    "target": e["name"],
+                    "type": "HAS_METHOD",
+                    "source_module": e["module"],
+                    "target_module": e["module"],
+                })
+
+        return relationships
+
+    def _build_parameter_relationships(self, entities):
+        relationships = []
+
+        for e in entities:
+            if e["type"] == "Parameter":
+                relationships.append({
+                    "source": e["function"],
+                    "target": e["name"],
+                    "type": "HAS_PARAM",
+                })
+
+        return relationships
 
 
+    def _build_return_relationships(self, entities):
+        relationships = []
 
+        for e in entities:
+            if e["type"] == "Type":
+                relationships.append({
+                    "source": e["function"],
+                    "target": e["name"],
+                    "type": "RETURNS",
+                })
+
+        return relationships
 
     def _build_decorator_relationships(
         self,
@@ -205,71 +246,128 @@ class RelationshipBuilder:
 
         return relationships
 
-    def _build_call_relationships_from_entities(
-        self,
-        entities: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
+    def _resolve_call_target(self, call_name, entity_index):
+        """
+        Resolve a call name to Function or Method entity.
+        Priority:
+        1. Method
+        2. Function
+        """
+        if (call_name, "Method") in entity_index:
+            return call_name, "Method"
+
+        if (call_name, "Function") in entity_index:
+            return call_name, "Function"
+
+        return None, None
+
+    def _build_call_relationships_from_entities(self, entities):
         relationships = []
 
-        functions = {
+        # Index functions
+        function_index = {
             e["name"]: e
             for e in entities
             if e["type"] == "Function"
         }
 
-        for func in entities:
-            if func["type"] != "Function":
+        # Index methods by (class, method)
+        method_index = {}
+        for e in entities:
+            if e["type"] == "Method" and e.get("parent_class"):
+                method_index[(e["parent_class"], e["name"])] = e
+
+        for caller in entities:
+            if caller["type"] not in {"Function", "Method"}:
                 continue
 
-            for called_name in func.get("calls", []):
-                target = functions.get(called_name)
-                if not target:
-                    continue
+            instance_map = caller.get("instance_map", {})
 
-                relationships.append({
-                    "source": func["name"],
-                    "source_module": func.get("module"),
-                    "target": target["name"],
-                    "target_module": target.get("module"),
-                    "type": "CALLS",
-                    "line_number": func.get("line_number"),
-                })
+            for call in caller.get("calls", []):
+
+                # -------------------------
+                # METHOD CALL (obj.method)
+                # -------------------------
+                if call["type"] == "method":
+                    obj = call["object"]
+                    method_name = call["name"]
+
+                    class_name = instance_map.get(obj)
+                    if not class_name:
+                        continue
+
+                    target = method_index.get((class_name, method_name))
+                    if not target:
+                        continue
+
+                    relationships.append({
+                        "source": caller["name"],
+                        "source_module": caller.get("module"),
+                        "target": target["name"],
+                        "target_module": target.get("module"),
+                        "type": "CALLS",
+                        "line_number": caller.get("line_number"),
+                    })
+
+                # -------------------------
+                # FUNCTION CALL (foo())
+                # -------------------------
+                elif call["type"] == "function":
+                    target = function_index.get(call["name"])
+                    if not target:
+                        continue
+
+                    relationships.append({
+                        "source": caller["name"],
+                        "source_module": caller.get("module"),
+                        "target": target["name"],
+                        "target_module": target.get("module"),
+                        "type": "CALLS",
+                        "line_number": caller.get("line_number"),
+                    })
 
         return relationships
+
+
 
     def _build_docstring_relationships(
         self,
         entities: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """
-        Build DOCUMENTED_BY relationships between entities and docstrings.
-        """
         relationships = []
 
-        # Index docstrings by scope + module
-        docstrings = [
-            e for e in entities if e.get("type") == "Docstring"
-        ]
+        # Index docstrings by (module, scope, entity name)
+        docstring_index = {}
+
+        for e in entities:
+            if e["type"] == "Docstring" and e["scope"] in {"class", "function"}:
+                parts = e["name"].split("::")
+                if len(parts) >= 3:
+                    entity_name = parts[-2]
+                    key = (e["module"], e["scope"], entity_name)
+                    docstring_index[key] = e
 
         for entity in entities:
-            if entity["type"] not in {"Class", "Function"}:
+            if entity["type"] not in {"Class", "Function", "Method"}:
                 continue
 
-            for doc in docstrings:
-                # Match scope
-                if doc["scope"] == "module":
-                    continue
+            scope = entity["type"].lower()
+            key = (entity["module"], scope, entity["name"])
 
-                if doc["scope"] == entity["type"].lower() and doc["module"] == entity["module"]:
-                    relationships.append({
-                        "source": entity["name"],
-                        "source_module": entity["module"],
-                        "target": doc["name"],
-                        "target_module": doc["module"],
-                        "type": "DOCUMENTED_BY",
-                    })
+            doc = docstring_index.get(key)
+            if not doc:
+                continue
+
+            relationships.append({
+                "source": entity["name"],
+                "source_module": entity["module"],
+                "target": doc["name"],
+                "target_module": doc["module"],
+                "type": "DOCUMENTED_BY",
+            })
 
         return relationships
+
 
 
     def find_circular_dependencies(

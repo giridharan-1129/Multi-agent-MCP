@@ -25,11 +25,24 @@ class CallVisitor(ast.NodeVisitor):
         self.calls = []
 
     def visit_Call(self, node: ast.Call):
+        # foo()
         if isinstance(node.func, ast.Name):
-            self.calls.append(node.func.id)
+            self.calls.append({
+                "type": "function",
+                "name": node.func.id,
+            })
+
+        # obj.foo()
         elif isinstance(node.func, ast.Attribute):
-            self.calls.append(node.func.attr)
+            if isinstance(node.func.value, ast.Name):
+                self.calls.append({
+                    "type": "method",
+                    "object": node.func.value.id,
+                    "name": node.func.attr,
+                })
+
         self.generic_visit(node)
+
 
 class ASTParser:
     """
@@ -47,6 +60,8 @@ class ASTParser:
         """Initialize AST parser."""
         self.current_file: Optional[str] = None
         self.current_module_imports: Set[str] = set()
+        self.instance_map: Dict[str, str] = {}
+
         self.class_stack: list[str] = []
         logger.debug("ASTParser initialized")
 
@@ -65,6 +80,7 @@ class ASTParser:
             FileParsingError: If parsing fails
         """
         self.current_file = file_path
+        self.instance_map = {}
         self.current_package = self._extract_package(file_path)
 
         self.current_module_imports = set()
@@ -120,6 +136,19 @@ class ASTParser:
                 file_path=file_path,
                 error_detail=str(e),
             )
+    def _handle_assignment(self, node: ast.Assign) -> None:
+        """
+        Track instance creation like:
+        app = FastAPI()
+        router = APIRouter()
+        """
+        if isinstance(node.value, ast.Call):
+            func = node.value.func
+            if isinstance(func, ast.Name):
+                class_name = func.id
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.instance_map[target.id] = class_name
 
     def _walk_tree(self, tree: ast.AST) -> List[Dict[str, Any]]:
         entities = []
@@ -130,6 +159,9 @@ class ASTParser:
 
             elif isinstance(node, ast.Import):
                 self._handle_import(node)
+                
+            elif isinstance(node, ast.Assign):
+                self._handle_assignment(node)
 
             elif isinstance(node, ast.ClassDef):
                 entities.extend(self._handle_class_with_context(node))
@@ -197,26 +229,43 @@ class ASTParser:
                 "package": self.current_package,
             })
 
-        bases = [self._get_name(base) for base in node.bases]
-
-        entities.append({
+        class_entity = {
             "type": "Class",
             "name": node.name,
             "module": self.current_file,
             "line_number": node.lineno,
-            "bases": bases,
+            "docstring": docstring,
+            "bases": [self._get_name(b) for b in node.bases],
             "package": self.current_package,
             "decorators": self._get_decorators(node),
-        })
+        }
 
+        entities.append(class_entity)
         return entities
 
 
-    def _handle_function(self, node):
+
+    def _handle_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> List[Dict[str, Any]]:
+
         entities = []
 
         docstring = ast.get_docstring(node)
+        is_async = isinstance(node, ast.AsyncFunctionDef)
 
+        # --- Calls ---
+        visitor = CallVisitor()
+        visitor.visit(node)
+
+        # --- Parameters ---
+        params = [arg.arg for arg in node.args.args]
+
+        # --- Return annotation ---
+        returns = ast.unparse(node.returns) if node.returns else None
+
+        # --- Docstring entity ---
         if docstring:
             entities.append({
                 "type": "Docstring",
@@ -227,23 +276,44 @@ class ASTParser:
                 "package": self.current_package,
             })
 
-        visitor = CallVisitor()
-        visitor.visit(node)
+        entity_type = "Method" if self.class_stack else "Function"
 
-        entities.append({
-            "type": "Function",
+        function_entity = {
+            "type": entity_type,
             "name": node.name,
             "module": self.current_file,
             "line_number": node.lineno,
-            "parameters": [arg.arg for arg in node.args.args],
-            "returns": ast.unparse(node.returns) if node.returns else None,
-            "is_async": isinstance(node, ast.AsyncFunctionDef),
+            "docstring": docstring,
+            "parameters": params,
+            "returns": returns,
+            "is_async": is_async,
             "package": self.current_package,
             "decorators": self._get_decorators(node),
             "calls": visitor.calls,
-        })
+            "instance_map": self.instance_map.copy(),
+            "parent_class": self.class_stack[-1] if self.class_stack else None,
+        }
+        for param in params:
+            entities.append({
+                "type": "Parameter",
+                "name": f"{node.name}.{param}",
+                "param_name": param,
+                "function": node.name,
+                "module": self.current_file,
+                "package": self.current_package,
+            })
 
+        if returns:
+            entities.append({
+                "type": "Type",
+                "name": returns,
+                "function": node.name,
+                "module": self.current_file,
+            })
+
+        entities.append(function_entity)
         return entities
+
 
 
     def _get_decorators(self, node: ast.AST) -> List[str]:

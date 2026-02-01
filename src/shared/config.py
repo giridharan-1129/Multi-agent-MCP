@@ -12,8 +12,9 @@ Example:
 """
 
 from typing import Literal
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from pydantic_settings import BaseSettings
+
 
 
 class Neo4jConfig(BaseSettings):
@@ -130,7 +131,6 @@ class Config(BaseSettings):
         # Access direct settings
         env_mode = config.environment
     """
-
     # Environment mode
     environment: Literal["development", "testing", "production"] = "development"
     """Application environment"""

@@ -212,6 +212,44 @@ class IndexRepositoryTool(MCPTool):
                             package=entity.get("package"),
                         )
 
+                    elif entity["type"] == "Method":
+                        # 1️⃣ ALWAYS create the Method node first
+                        await neo4j.create_method_node(
+                            name=entity["name"],
+                            module=entity["module"],
+                            docstring=entity.get("docstring"),
+                            line_number=entity.get("line_number"),
+                            is_async=entity.get("is_async", False),
+                        )
+
+                        # 2️⃣ File → Method (DEFINES)
+                        await neo4j.create_defines_relationship(
+                            file_path=entity["module"],
+                            target_name=entity["name"],
+                            target_module=entity["module"],
+                            target_type="Method",
+                        )
+
+                        # 3️⃣ Class → Method (HAS_METHOD) — only if parent exists
+                        if entity.get("parent_class"):
+                            await neo4j.create_relationship(
+                                source_name=entity["parent_class"],
+                                source_label="Class",
+                                target_name=entity["name"],
+                                target_label="Method",
+                                rel_type="HAS_METHOD",
+                            )
+
+
+                    elif entity["type"] == "Parameter":
+                        await neo4j.create_parameter_node(
+                            name=entity["name"],
+                            param_name=entity["param_name"],
+                            module=entity["module"],
+                        )
+
+                    elif entity["type"] == "Type":
+                        await neo4j.create_type_node(entity["name"])
 
                     elif entity["type"] == "Function":
                             await neo4j.create_function_node(
@@ -276,7 +314,10 @@ class IndexRepositoryTool(MCPTool):
                             "CALLS": ("Function", "Function"),
                             "INHERITS_FROM": ("Class", "Class"),
                             "DECORATED_BY": ("Function", "Function"),
-                            "DOCUMENTED_BY": ("Class", "Docstring"),
+                            "HAS_METHOD": ("Class", "Method"),
+                            "HAS_PARAM": ("Function", "Parameter"),
+                            "RETURNS": ("Function", "Type"),
+
                         }
                     # Special handling for CONTAINS (overloaded relationship)
                     if rel["type"] == "CONTAINS":
@@ -288,8 +329,42 @@ class IndexRepositoryTool(MCPTool):
                         else:
                             source_label = "Package"
                             target_label = "File"
+
+                    elif rel["type"] == "DOCUMENTED_BY":
+                        fn = await neo4j.find_entity(rel["source"], "Function")
+                        mt = await neo4j.find_entity(rel["source"], "Method")
+                        cl = await neo4j.find_entity(rel["source"], "Class")
+
+                        if fn.get("entity"):
+                            source_label = "Function"
+                        elif mt.get("entity"):
+                            source_label = "Method"
+                        elif cl.get("entity"):
+                            source_label = "Class"
+                        else:
+                            continue
+
+
+                        target_label = "Docstring"
+
+                    elif rel["type"] == "CALLS" and target_label == "Method":
+                        if not await neo4j.find_entity(rel["target"], "Method"):
+                            continue
+
+
                     else:
-                        source_label, target_label = LABEL_MAP.get(rel["type"], (None, None))
+                        if rel["type"] in {"HAS_PARAM", "RETURNS"}:
+                            # Function OR Method
+                            if (await neo4j.find_entity(rel["source"], "Method")).get("entity"):
+                                source_label = "Method"
+                            else:
+                                source_label = "Function"
+
+                            target_label = LABEL_MAP[rel["type"]][1]
+
+                        else:
+                            source_label, target_label = LABEL_MAP.get(rel["type"], (None, None))
+
 
                     if not source_label or not target_label:
                         continue
