@@ -8,7 +8,8 @@ HOW: Use Graph Query Agent to find entities and relationships
 
 from typing import Optional
 from fastapi import APIRouter, HTTPException
-
+from openai import OpenAI
+import os
 from ...shared.logger import get_logger, generate_correlation_id, set_correlation_id
 from ...shared.neo4j_service import get_neo4j_service
 from ..dependencies import get_graph_query
@@ -232,4 +233,82 @@ async def get_related(payload: dict):
         raise
     except Exception as e:
         logger.error("Failed to get related entities", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/extract-keywords")
+async def extract_keywords(payload: dict):
+    """
+    Extract keywords and entities from a query using LLM.
+    Used by agents to understand what context to retrieve.
+    
+    Input: {"query": "How does dependency injection work?"}
+    Output: {
+        "query": "...",
+        "keywords": ["dependency", "injection"],
+        "entities": ["Depends", "FastAPI"],
+        "intent": "explanation"
+    }
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+    
+    try:
+        query = payload.get("query")
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="query is required")
+        
+        logger.info("Extracting keywords", query=query[:100])
+        
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        
+        prompt = f"""Extract keywords and entities from this code question.
+
+Query: {query}
+
+Return ONLY JSON (no markdown, no explanation):
+{{
+    "keywords": ["word1", "word2"],
+    "entities": ["Class", "Function"],
+    "intent": "explanation|search|analysis|comparison"
+}}
+
+Examples:
+- "How does FastAPI handle dependency injection?" → 
+  {{"keywords": ["dependency", "injection", "handle"], "entities": ["FastAPI", "Depends"], "intent": "explanation"}}
+  
+- "Show me APIRouter" →
+  {{"keywords": ["apiRouter"], "entities": ["APIRouter"], "intent": "search"}}
+"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+        )
+        
+        import json
+        result_text = response.choices[0].message.content.strip()
+        result = json.loads(result_text)
+        
+        logger.info(
+            "Keywords extracted",
+            keywords=result.get("keywords"),
+            entities=result.get("entities"),
+            intent=result.get("intent"),
+        )
+        
+        return {
+            "query": query,
+            "keywords": result.get("keywords", []),
+            "entities": result.get("entities", []),
+            "intent": result.get("intent", "general"),
+            "correlation_id": correlation_id,
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to extract keywords", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))

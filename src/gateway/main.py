@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..shared.config import config
 from ..shared.logger import get_logger, generate_correlation_id, set_correlation_id
 from ..shared.neo4j_service import init_neo4j_service, get_neo4j_service
+from ..shared.pinecone_embeddings_service import init_embeddings_service
 from ..agents.orchestrator_agent import OrchestratorAgent
 from ..agents.indexer_agent import IndexerAgent
 from ..agents.graph_query_agent import GraphQueryAgent
@@ -54,11 +55,28 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Neo4j service initialized")
 
+        # Initialize Embeddings Service (Pinecone)
+        try:
+            await init_embeddings_service()
+            logger.info("✅ Pinecone embeddings service initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Pinecone embeddings service initialization failed: {str(e)}")
+            logger.info("Continuing with Neo4j-only search (semantic search disabled)")
+
         # 1️⃣ Create agents FIRST
+        logger.info("🤖 Creating MCP agents...")
+        
         orchestrator = OrchestratorAgent()
+        logger.info("✅ Orchestrator Agent created")
+        
         indexer = IndexerAgent()
+        logger.info("✅ Indexer Agent created")
+        
         graph_query = GraphQueryAgent()
+        logger.info("✅ Graph Query Agent created")
+        
         code_analyst = CodeAnalystAgent()
+        logger.info("✅ Code Analyst Agent created")
 
         # 2️⃣ Start agents
         await orchestrator.startup()

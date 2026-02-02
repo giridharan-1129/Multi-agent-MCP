@@ -188,18 +188,26 @@ class PineconeEmbeddingsService:
     def __init__(self):
         """Initialize Pinecone embeddings service."""
         if not PINECONE_AVAILABLE:
-            raise ImportError("pinecone package required: pip install pinecone-client")
+            logger.warning("pinecone package not available: pip install pinecone-client")
+            self.index = None
+            return
         if not TRANSFORMERS_AVAILABLE:
-            raise ImportError("sentence-transformers package required: pip install sentence-transformers")
+            logger.warning("sentence-transformers package not available")
+            self.index = None
+            return
         if not COHERE_AVAILABLE:
-            raise ImportError("cohere package required: pip install cohere")
+            logger.warning("cohere package not available")
+            self.index = None
+            return
         
         # Pinecone configuration
         self.pinecone_api_key = os.getenv("PINECONE_API_KEY")
         self.pinecone_index_name = os.getenv("PINECONE_INDEX_NAME", "code-search")
         
         if not self.pinecone_api_key:
-            raise ValueError("PINECONE_API_KEY environment variable not set")
+            logger.warning("PINECONE_API_KEY environment variable not set - embeddings disabled")
+            self.index = None
+            return
         
         # Initialize Pinecone
         try:
@@ -208,44 +216,41 @@ class PineconeEmbeddingsService:
             logger.info(f"✅ Pinecone connected to index: {self.pinecone_index_name}")
         except Exception as e:
             logger.error(f"Failed to connect to Pinecone: {e}")
-            raise
+            # Don't raise - allow graceful degradation
+            self.index = None
         
         # Initialize embedding model
+        # Initialize OpenAI client for embeddings
         try:
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("✅ Embedding model loaded: all-MiniLM-L6-v2")
+            import openai
+            self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            self.embedding_model = None  # Will use OpenAI API
+            logger.info("✅ Using OpenAI embeddings (1536 dim)")
         except Exception as e:
-            logger.error(f"Failed to load embedding model: {e}")
+            logger.error(f"Failed to initialize OpenAI: {e}")
+            self.openai_client = None
             raise
         
         # Initialize Cohere reranker
         self.cohere_api_key = os.getenv("COHERE_API_KEY")
+        self.cohere_client = None
+        
         if self.cohere_api_key:
             try:
                 self.cohere_client = cohere.ClientV2(api_key=self.cohere_api_key)
                 logger.info("✅ Cohere reranker initialized")
             except Exception as e:
-                logger.warning(f"Failed to initialize Cohere: {e}")
+                logger.warning(f"⚠️ Failed to initialize Cohere: {e}")
                 self.cohere_client = None
         else:
-            logger.warning("⚠️ COHERE_API_KEY not set - reranking disabled")
-            self.cohere_client = None
+            logger.warning("⚠️ COHERE_API_KEY not set - reranking will be skipped")
     
     async def embed_chunks(
         self,
         chunks: List[CodeChunk],
         batch_size: int = 32
     ) -> List[Dict[str, Any]]:
-        """
-        Generate embeddings for code chunks.
-        
-        Args:
-            chunks: List of CodeChunk objects
-            batch_size: Process embeddings in batches
-            
-        Returns:
-            List of upsert-ready vectors
-        """
+        """Generate embeddings for code chunks."""
         logger.info(f"🧬 Generating embeddings for {len(chunks)} chunks...")
         
         vectors = []
@@ -255,18 +260,41 @@ class PineconeEmbeddingsService:
             batch = chunks[i:i + batch_size]
             batch_num = (i // batch_size) + 1
             
-            # Extract content for embedding
-            contents = [chunk.content for chunk in batch]
+            # Extract and clean content
+            contents = []
+            batch_chunks = []
             
-            # Generate embeddings (sync call in async context)
-            embeddings = await asyncio.to_thread(
-                self.embedding_model.encode,
-                contents,
-                convert_to_tensor=False
-            )
+            for chunk in batch:
+                content = chunk.content[:2000].strip()  # Truncate and strip whitespace
+                if content:  # Only include non-empty content
+                    contents.append(content)
+                    batch_chunks.append(chunk)
+            
+            if not contents:
+                logger.warning(f"Batch {batch_num}: All chunks empty, skipping")
+                continue
+            
+            # Generate embeddings via OpenAI API
+            def _get_embeddings():
+                try:
+                    response = self.openai_client.embeddings.create(
+                        model="text-embedding-3-small",
+                        input=contents,
+                        encoding_format="float"
+                    )
+                    return [item.embedding for item in response.data]
+                except Exception as e:
+                    logger.error(f"OpenAI API error in batch {batch_num}: {e}")
+                    raise
+            
+            try:
+                embeddings = await asyncio.to_thread(_get_embeddings)
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings for batch {batch_num}: {e}")
+                continue  # Skip this batch, continue with next
             
             # Create vectors with metadata
-            for chunk, embedding in zip(batch, embeddings):
+            for chunk, embedding in zip(batch_chunks, embeddings):
                 vector = {
                     "id": chunk.chunk_id,
                     "values": embedding.tolist() if hasattr(embedding, 'tolist') else embedding,
@@ -283,7 +311,7 @@ class PineconeEmbeddingsService:
                 }
                 vectors.append(vector)
             
-            logger.info(f"  ✓ Batch {batch_num}: {len(batch)} embeddings generated")
+            logger.info(f"  ✓ Batch {batch_num}: {len(embeddings)} embeddings generated")
         
         logger.info(f"✅ Generated {len(vectors)} embeddings")
         return vectors
@@ -303,6 +331,14 @@ class PineconeEmbeddingsService:
         Returns:
             Number of vectors upserted
         """
+        if not vectors:
+            logger.warning("No vectors provided for upsert")
+            return 0
+        
+        if not self.index:
+            logger.error("Pinecone index not initialized")
+            return 0
+        
         logger.info(f"📤 Upserting {len(vectors)} vectors to Pinecone...")
         
         upserted_count = 0
@@ -342,14 +378,26 @@ class PineconeEmbeddingsService:
         Returns:
             List of search results with scores
         """
-        logger.info(f"🔍 Semantic search: '{query[:100]}' in repo {repo_id}")
+        if not query or not repo_id:
+            logger.error("Query and repo_id are required for semantic search")
+            return []
         
-        # Generate query embedding
-        query_embedding = await asyncio.to_thread(
-            self.embedding_model.encode,
-            query,
-            convert_to_tensor=False
-        )
+        if not self.openai_client or not self.index:
+            logger.error("OpenAI client or Pinecone index not initialized")
+            return []
+
+        logger.info(f"🔍 Semantic search: '{query[:100]}' in repo {repo_id}")
+
+        # Generate query embedding using OpenAI
+        def _get_query_embedding():
+            response = self.openai_client.embeddings.create(
+                model="text-embedding-3-small",
+                input=query,
+                encoding_format="float"
+            )
+            return response.data[0].embedding
+
+        query_embedding = await asyncio.to_thread(_get_query_embedding)
         
         # Build filter
         search_filter = {"repo_id": {"$eq": repo_id}}
@@ -396,40 +444,61 @@ class PineconeEmbeddingsService:
         Returns:
             Reranked results with relevance scores
         """
-        if not self.cohere_client or not results:
-            logger.warning("Cohere not available or no results to rerank")
+        if not query or not results:
+            logger.warning("Query and results required for reranking")
+            return results
+        
+        if not self.cohere_client:
+            logger.warning("Cohere not available - skipping reranking")
             return results
         
         logger.info(f"🔄 Reranking {len(results)} results with Cohere...")
         
         try:
             # Prepare documents for reranking
-            documents = [
-                f"File: {r['metadata'].get('file_path', 'unknown')}\n"
-                f"Lines {r['metadata'].get('start_line', '?')}-{r['metadata'].get('end_line', '?')}\n"
-                f"Preview: {r['metadata'].get('content_preview', '')}"
-                for r in results
-            ]
+            documents = []
+            for r in results:
+                metadata = r.get('metadata', {})
+                doc = f"File: {metadata.get('file_path', 'unknown')}\n"
+                doc += f"Lines {metadata.get('start_line', '?')}-{metadata.get('end_line', '?')}\n"
+                doc += f"Preview: {metadata.get('content_preview', 'N/A')}"
+                documents.append(doc)
+            
+            if not documents:
+                logger.warning("No documents prepared for reranking")
+                return results
             
             # Cohere rerank
             response = await asyncio.to_thread(
                 self.cohere_client.rerank,
-                model="rerank-english-v2.0",
+                model="rerank-english-v3",  # Updated model
                 query=query,
                 documents=documents,
                 top_n=min(5, len(results))
             )
             
+            if not response or not response.results:
+                logger.warning("No reranking response from Cohere")
+                return results
+            
             # Map back to original results
             reranked_results = []
             for rank_result in response.results:
-                original = results[rank_result.index]
-                reranked_results.append({
-                    **original,
-                    "relevance_score": rank_result.relevance_score
-                })
-            
+                if rank_result.index < len(results):
+                    original = results[rank_result.index]
+                    reranked_results.append({
+                        **original,
+                        "relevance_score": rank_result.relevance_score,
+                        "reranked": True  # Mark as reranked
+                    })
+
             logger.info(f"  ✓ Reranking complete: {len(reranked_results)} results")
+
+            # Log top 3 reranked scores
+            for i, r in enumerate(reranked_results[:3], 1):
+                metadata = r.get('metadata', {})
+                logger.info(f"    [{i}] {metadata.get('file_path', 'unknown')} | Reranked Score: {r.get('relevance_score', 0):.3f}")
+
             return reranked_results
             
         except Exception as e:
@@ -453,6 +522,10 @@ class PineconeEmbeddingsService:
         Returns:
             Reranked results with citations
         """
+        if not query or not repo_id:
+            logger.error("Query and repo_id required for search pipeline")
+            return []
+        
         logger.info(f"🔍 Starting search pipeline: '{query[:50]}...'")
         
         # Step 1: Semantic search
@@ -467,21 +540,31 @@ class PineconeEmbeddingsService:
             return []
         
         # Step 2: Rerank (if Cohere available)
+        # Step 2: Rerank (if Cohere available)
         reranked = await self.rerank_results(query, results)
-        
+
+        if self.cohere_client:
+            logger.info(f"✅ Results reranked with Cohere (using rerank-english-v3)")
+            for i, r in enumerate(reranked[:3], 1):
+                logger.info(f"   [{i}] {r.get('metadata', {}).get('file_path', 'unknown')} | Score: {r.get('relevance_score', r.get('score', 0)):.3f}")
+        else:
+            logger.warning("⚠️ Cohere not available - using original search ranking")        
         # Step 3: Format citations
-        citations = [
-            {
-                "file": r['metadata'].get('file_path', 'unknown'),
-                "file_name": r['metadata'].get('file_name', 'unknown'),
-                "lines": f"{r['metadata'].get('start_line', '?')}-{r['metadata'].get('end_line', '?')}",
-                "language": r['metadata'].get('language', 'python'),
-                "preview": r['metadata'].get('content_preview', ''),
+        # Step 3: Format citations
+        citations = []
+        for r in reranked:
+            metadata = r.get('metadata', {})
+            citation = {
+                "type": "code_chunk",
+                "file": metadata.get('file_path', 'unknown'),
+                "file_name": metadata.get('file_name', 'unknown'),
+                "lines": f"{metadata.get('start_line', '?')}-{metadata.get('end_line', '?')}",
+                "language": metadata.get('language', 'python'),
+                "preview": metadata.get('content_preview', 'N/A'),
                 "relevance": r.get('relevance_score', r.get('score', 0)),
-                "chunk_id": r['id']
+                "chunk_id": r.get('id', 'unknown')
             }
-            for r in reranked
-        ]
+            citations.append(citation)
         
         logger.info(f"✅ Search complete: {len(citations)} citations")
         return citations
@@ -496,13 +579,23 @@ class PineconeEmbeddingsService:
         Returns:
             Index statistics
         """
+        if not self.index:
+            logger.error("Pinecone index not initialized")
+            return {
+                "total_vectors": 0,
+                "index_name": self.pinecone_index_name,
+                "dimension": 384,
+                "metric": "cosine",
+                "error": "Index not available"
+            }
+        
         try:
             stats = await asyncio.to_thread(self.index.describe_index_stats)
             
             return {
                 "total_vectors": stats.get('total_vector_count', 0),
                 "index_name": self.pinecone_index_name,
-                "dimension": 384,  # all-MiniLM-L6-v2 dimension
+                "dimension": 1536,  # OpenAI text-embedding-3-small dimension
                 "metric": "cosine",
                 "namespaces": stats.get('namespaces', {})
             }
@@ -520,6 +613,14 @@ class PineconeEmbeddingsService:
         Returns:
             Success status
         """
+        if not repo_id:
+            logger.error("repo_id required for deletion")
+            return False
+        
+        if not self.index:
+            logger.error("Pinecone index not initialized")
+            return False
+        
         try:
             logger.warning(f"🗑️ Deleting all embeddings for repo {repo_id}...")
             

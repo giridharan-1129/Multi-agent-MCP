@@ -97,6 +97,12 @@ if "embeddings_created" not in st.session_state:
     st.session_state.embeddings_created = False
 if "last_repo_url" not in st.session_state:
     st.session_state.last_repo_url = None
+# Pinecone chunk popup states
+for i in range(1, 100):
+    if f"show_chunk_{i}" not in st.session_state:
+        st.session_state[f"show_chunk_{i}"] = False
+    if f"show_pinecone_{i}" not in st.session_state:
+        st.session_state[f"show_pinecone_{i}"] = False
 
 
 # ============================================================================
@@ -129,9 +135,12 @@ with tab_chat:
         st.divider()
         
         # âœ¨ VECTOR EMBEDDINGS SECTION
-        st.subheader("Vector Embeddings (Pinecone)")
-        
-        embed_button = st.button(
+        # Hide embeddings section for MCP demo - students focus on agent orchestration
+        with st.expander("⚙️ Vector Embeddings (Optional - Advanced)", expanded=False):
+            st.info("💡 Embeddings add semantic search capability. For core MCP demo, Neo4j graph search is sufficient.")
+            st.subheader("Vector Embeddings (Pinecone)")
+            
+            embed_button = st.button(
             "Embed Repository",
             use_container_width=True,
             key="embed_btn",
@@ -176,39 +185,55 @@ with tab_chat:
                     if embed_res.ok:
                         embed_data = embed_res.json()
                         
-                        with progress_placeholder:
-                            st.progress(100, text="Embedding Complete!")
+                        # Check if successful or fallback
+                        if embed_data.get('success') == False:
+                            # Pinecone not configured - graceful fallback
+                            with status_container:
+                                st.warning(f"⚠️ {embed_data.get('message', 'Embeddings not available')}")
+                                st.info(f"💡 Fallback: {embed_data.get('fallback', 'Neo4j graph search available')}")
+                                st.caption(embed_data.get('note', ''))
+                            
+                            st.session_state.embedding_active = False
+                            st.session_state.embeddings_created = False
                         
-                        with status_container:
-                            st.success("Embeddings Created Successfully!")
-                          
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric(
-                                    "Code Chunks",
-                                    embed_data.get('chunks_created', 0)
-                                )
-                            with col2:
-                                st.metric(
-                                    "Vectors Stored",
-                                    embed_data.get('vectors_upserted', embed_data.get('embeddings_generated', 0))
-                                )
-                        
-                            st.info(f"""
-                            **Embedding Details:**
-                            - Repository: {embed_data.get('repo_id', 'unknown')}
-                            - Chunks Created: {embed_data.get('chunks_created', 0)}
-                            - Embedding Dimension: {stats.get('dimension', 384)}
-                            - Metric: {stats.get('metric', 'cosine')}
-                            """)
-                        
-                        st.session_state.embedding_active = False
-                        st.session_state.embeddings_created = True
-                        time.sleep(3)
+                        else:
+                            # Successfully created embeddings
+                            with progress_placeholder:
+                                st.progress(100, text="Embedding Complete!")
+                            
+                            with status_container:
+                                st.success("✅ Embeddings Created Successfully!")
+                            
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.metric(
+                                        "Code Chunks",
+                                        embed_data.get('chunks_created', 0)
+                                    )
+                                with col2:
+                                    st.metric(
+                                        "Vectors Stored",
+                                        embed_data.get('vectors_upserted', embed_data.get('embeddings_generated', 0))
+                                    )
+                            
+                                embed_stats = embed_data.get('stats', {})
+                                st.info(f"""
+                                **Embedding Details:**
+                                - Repository: {embed_data.get('repo_id', 'unknown')}
+                                - Chunks Created: {embed_data.get('chunks_created', 0)}
+                                - Vectors Upserted: {embed_data.get('vectors_upserted', 0)}
+                                - Embedding Dimension: {embed_stats.get('dimension', 384)}
+                                - Metric: {embed_stats.get('metric', 'cosine')}
+                                """)
+                            
+                            st.session_state.embedding_active = False
+                            st.session_state.embeddings_created = True
+                            time.sleep(3)
                         
                     else:
                         with status_container:
-                            st.error(f"Embedding failed: {embed_res.text}")
+                            st.warning(f"⚠️ Embedding service unavailable: {embed_res.text}")
+                            st.info("💡 Using Neo4j graph search instead (no semantic search)")
                         st.session_state.embedding_active = False
                         
             except requests.exceptions.Timeout:
@@ -227,6 +252,9 @@ with tab_chat:
         if start_index and repo_url:
             st.session_state.indexing_active = True
             try:
+                # Show progress modal instead of logger
+                st.toast(f"🚀 Starting indexing: {repo_url}")
+                
                 res = requests.post(
                     f"{API_BASE}/api/index",
                     json={"repo_url": repo_url, "full_index": True},
@@ -410,7 +438,8 @@ with tab_chat:
             pass  # Silent: no completed jobs to show
         
         # DATABASE STATS with State Management (NO CACHE - updates in real-time)
-        st.subheader(" Database Stats")
+        # DATABASE STATS with State Management (NO CACHE - updates in real-time)
+        st.subheader(" Neo4j Database Stats")
         try:
             res = requests.get(f"{API_BASE}/api/index/status", timeout=10)
             if res.ok:
@@ -438,7 +467,71 @@ with tab_chat:
                     st.metric("Parameters", st.session_state.db_stats["Parameter"])
                     st.metric("Types", st.session_state.db_stats["Type"])
         except:
-            st.warning("Could not fetch stats")
+            st.warning("Could not fetch Neo4j stats")
+        
+        st.divider()
+        
+        # PINECONE EMBEDDINGS STATS
+        st.subheader("⚡ Vector Embeddings (Pinecone)")
+        
+        try:
+            pinecone_res = requests.get(f"{API_BASE}/api/embeddings/stats", timeout=10)
+            if pinecone_res.ok:
+                pinecone_data = pinecone_res.json()
+                
+                if pinecone_data.get("status") == "unavailable":
+                    st.warning(f"⚠️ {pinecone_data.get('message', 'Pinecone not configured')}")
+                    st.info(f"💡 {pinecone_data.get('fallback', 'Using Neo4j graph search')}")
+                    st.caption("**Setup:** Set PINECONE_API_KEY and COHERE_API_KEY environment variables to enable semantic search")
+                
+                elif pinecone_data.get("status") == "available":
+                    summary = pinecone_data.get("summary", {})
+                    stats = pinecone_data.get("stats", {})
+                    
+                    # Status indicator
+                    status_icon = "✅" if summary.get("chunks_total", 0) > 0 else "⏳"
+                    st.write(f"{status_icon} **Status:** {summary.get('status', 'Unknown')}")
+                    
+                    # Metrics
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric(
+                            "📦 Code Chunks",
+                            summary.get("chunks_total", 0)
+                        )
+                        st.caption(f"Model: {summary.get('embedding_model', 'N/A')}")
+                    
+                    with col2:
+                        st.metric(
+                            "🔄 Reranker",
+                            summary.get('reranker', 'N/A').split('(')[0]
+                        )
+                        st.caption(f"Index: {stats.get('index_name', 'N/A')}")
+                    
+                    # Detailed stats in expander
+                    with st.expander("📊 Detailed Stats"):
+                        st.write(f"**Total Vectors:** {stats.get('total_vectors', 0)}")
+                        st.write(f"**Dimension:** {stats.get('dimension', 0)}")
+                        st.write(f"**Metric:** {stats.get('metric', 'cosine')}")
+                        
+                        if stats.get('namespaces'):
+                            st.write("**Namespaces:**")
+                            for ns_name, ns_stats in stats.get('namespaces', {}).items():
+                                st.write(f"  • {ns_name}: {ns_stats.get('vector_count', 0)} vectors")
+                
+                elif pinecone_data.get("status") == "unavailable":
+                    st.warning(f"⚠️ {pinecone_data.get('message', 'Pinecone not configured')}")
+                    st.info(f"💡 {pinecone_data.get('fallback', 'Using Neo4j graph search')}")
+                
+                else:
+                    st.error(f"❌ {pinecone_data.get('error', 'Error fetching Pinecone stats')}")
+                    st.info("💡 Neo4j graph search still available")
+        
+        except requests.exceptions.Timeout:
+            st.warning("⏱️ Pinecone stats timeout")
+        except Exception as e:
+            st.warning(f"⚠️ Could not fetch Pinecone stats: {str(e)[:50]}")
+            st.caption("💡 Neo4j graph search available as fallback")
         
         st.divider()
         
@@ -462,12 +555,12 @@ with tab_chat:
                             with node_col:
                                 st.write("**Nodes:**")
                                 for node_type, count in sorted(nodes.items()):
-                                    st.write(f"  â€¢ {node_type}: {count}")
+                                    st.write(f"   {node_type}: {count}")
                             
                             with rel_col:
                                 st.write("**Relationships:**")
                                 for rel_type, count in sorted(rels.items()):
-                                    st.write(f"  â€¢ {rel_type}: {count}")
+                                    st.write(f"   {rel_type}: {count}")
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
@@ -487,16 +580,57 @@ with tab_chat:
                     agents = msg.get("agents", [])
                     
                     if sources:
-                        with st.expander(f"“ Sources ({len(sources)})"):
-                            for j, source in enumerate(sources, 1):
-                                st.markdown(f"""
-<div class="citation-box">
-<strong>Source {j}</strong><br>
-Type: {source.get('type', 'N/A')}<br>
-Name: <code>{source.get('name', 'N/A')}</code><br>
-Module: {source.get('module', 'N/A')}
-</div>
-                                """, unsafe_allow_html=True)
+                        # Separate pinecone and neo4j sources
+                        pinecone_sources = [s for s in sources if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
+                        neo4j_sources = [s for s in sources if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                        
+                        # PINECONE CHUNKS
+                        if pinecone_sources:
+                            st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
+                            for j, source in enumerate(pinecone_sources, 1):
+                                with st.container(border=True):
+                                    col1, col2 = st.columns([0.85, 0.15])
+                                    
+                                    with col1:
+                                        st.markdown(f"""
+**{source.get('file_name', 'unknown')}** | Lines {source.get('lines', 'N/A')} | {source.get('language', 'python')}
+- Relevance: {source.get('relevance_percent', 'N/A')}
+- Reranked: {'✅ Yes' if source.get('reranked') else '❌ No'}
+- Repo: {source.get('repo_id', 'N/A')}
+- Start Line: {source.get('start_line', 'N/A')}
+- End Line: {source.get('end_line', 'N/A')}
+- Preview: {source.get('preview', 'N/A')[:120]}...
+                                        """)
+                                    
+                                    with col2:
+                                        if st.button("📂 View Code", key=f"pinecone_view_{j}", use_container_width=True):
+                                            st.session_state[f"show_pinecone_{j}"] = True
+                                
+                                # Pinecone code popup modal
+                                if st.session_state.get(f"show_pinecone_{j}"):
+                                    st.markdown("---")
+                                    col_code, col_close = st.columns([0.95, 0.05])
+                                    with col_code:
+                                        st.write(f"**📄 {source.get('file_name', 'unknown')}** (Lines {source.get('lines', 'N/A')})")
+                                    with col_close:
+                                        if st.button("✕", key=f"pinecone_close_{j}"):
+                                            st.session_state[f"show_pinecone_{j}"] = False
+                                    
+                                    st.code(source.get('content', source.get('preview', 'Content not available')), language=source.get('language', 'python'))
+                                    st.markdown("---")
+                        
+                        # NEO4J RELATIONSHIPS
+                        if neo4j_sources:
+                            st.write("**🔗 Neo4j Entity Relationships (Graph)**")
+                            for k, source in enumerate(neo4j_sources, 1):
+                                with st.container(border=True):
+                                    st.markdown(f"""
+**{source.get('entity_type', 'Unknown')}**: {source.get('entity', 'unknown')}
+- Dependencies: {', '.join(source.get('dependencies', [])[:3]) or 'None'}
+- Used by: {', '.join(source.get('used_by', [])[:3]) or 'Not used'}
+- Module: {source.get('module', 'N/A')}
+- Type: {source.get('node_type', 'N/A')}
+                                    """)
                     
                     if agents:
                         agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents])
@@ -543,15 +677,56 @@ Module: {source.get('module', 'N/A')}
                     st.divider()
                     
                     if retrieved_context:
-                        with st.expander(f" Sources ({len(retrieved_context)})"):
-                            for j, source in enumerate(retrieved_context, 1):
-                                st.markdown(f"""
-<div class="citation-box">
-<strong>Source {j}</strong><br>
-Type: {source.get('type', 'N/A')}<br>
-Name: <code>{source.get('name', 'N/A')}</code>
-</div>
-                                """, unsafe_allow_html=True)
+                        embeddings_sources = [s for s in retrieved_context if s.get('type') == 'code_chunk']
+                        graph_sources = [s for s in retrieved_context if s.get('type') == 'relationship']
+                        
+                        if embeddings_sources:
+                            st.write("### 📝 Pinecone Code Chunks (Semantic Search)")
+                            for idx, source in enumerate(embeddings_sources, 1):
+                                with st.container(border=True):
+                                    col1, col2 = st.columns([0.8, 0.2])
+                                    
+                                    with col1:
+                                        reranked_status = "✅ Reranked" if source.get('reranked') else "⭕ Original"
+                                        st.markdown(f"""
+**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
+- **Lines:** {source.get('lines', 'N/A')}
+- **Relevance:** {source.get('relevance_percent', 'N/A')}
+- **Status:** {reranked_status}
+- **Chunk ID:** `{source.get('chunk_id', 'N/A')}`
+- **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
+- **Model:** {source.get('embedding_model', 'N/A')}
+                                        """)
+                                        st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
+                                    
+                                    with col2:
+                                        if st.button("📂 View", key=f"chunk_view_{idx}"):
+                                            st.session_state[f"show_chunk_{idx}"] = True
+                                
+                                # Chunk code popup
+                                if st.session_state.get(f"show_chunk_{idx}"):
+                                    st.divider()
+                                    col_title, col_x = st.columns([0.9, 0.1])
+                                    with col_title:
+                                        st.subheader(f"📄 {source.get('file_name', 'unknown')} (Lines {source.get('lines', 'N/A')})")
+                                    with col_x:
+                                        if st.button("✕", key=f"chunk_close_{idx}"):
+                                            st.session_state[f"show_chunk_{idx}"] = False
+                                    
+                                    st.code(source.get('content', source.get('preview', 'Code not available')), language=source.get('language', 'python'))
+                                    st.divider()
+                        
+                        if graph_sources:
+                            st.write("### 🔗 Neo4j Entity Relationships (Graph)")
+                            for idx, source in enumerate(graph_sources, 1):
+                                with st.container(border=True):
+                                    st.markdown(f"""
+**{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
+- **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
+- **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
+- **Module:** {source.get('module', 'N/A')}
+- **Line:** {source.get('line_number', 'N/A')}
+                                    """)
                     
                     if agents_used:
                         agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents_used])
@@ -836,10 +1011,10 @@ with tab_tools:
     
     with col2:
         st.subheader("Database Management")
-        st.warning("This will delete ALL indexed data!")
+        st.warning("⚠️ This will delete ALL indexed data!")
         
         if st.checkbox("I understand", key="confirm_clear"):
-            if st.button("Clear Database"):
+            if st.button("🗑️ Clear Database"):
                 try:
                     res = requests.post(
                         f"{API_BASE}/api/query/execute",
@@ -847,10 +1022,74 @@ with tab_tools:
                         timeout=30
                     )
                     if res.ok:
-                        st.success(" Database cleared!")
+                        st.success("✅ Database cleared!")
                         st.balloons()
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
+    
+    st.divider()
+    
+    # EMBEDDINGS MANAGEMENT
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        st.subheader("⚡ Embeddings Management")
+        st.warning("⚠️ This will delete ALL Pinecone embeddings!")
+        
+        if st.checkbox("I understand embeddings deletion", key="confirm_delete_embeddings"):
+            repo_id = st.text_input(
+                "Repository ID to delete",
+                placeholder="fastapi (leave empty for all)",
+                key="repo_id_delete"
+            )
+            
+            if st.button("🗑️ Delete Embeddings", use_container_width=True):
+                try:
+                    with st.spinner("Deleting embeddings..."):
+                        delete_repo_id = repo_id if repo_id else "all"
+                        
+                        delete_res = requests.delete(
+                            f"{API_BASE}/api/embeddings/delete",
+                            params={"repo_id": delete_repo_id},
+                            timeout=30
+                        )
+                        
+                        if delete_res.ok:
+                            delete_data = delete_res.json()
+                            if delete_data.get("success"):
+                                st.success(f"✅ {delete_data.get('message', 'Embeddings deleted!')}")
+                                st.info(f"💡 Deleted from: {delete_data.get('index_name', 'Pinecone')}")
+                                time.sleep(2)
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {delete_data.get('error', 'Delete failed')}")
+                        else:
+                            st.error(f"Delete failed: {delete_res.text}")
+                
+                except requests.exceptions.Timeout:
+                    st.error("⏱️ Delete timeout")
+                except Exception as e:
+                    st.error(f"Error: {str(e)}")
+    
+    with col4:
+        st.subheader("📊 Embeddings Stats Quick Check")
+        if st.button("🔄 Refresh Embeddings Stats", use_container_width=True):
+            try:
+                stats_res = requests.get(f"{API_BASE}/api/embeddings/stats", timeout=10)
+                if stats_res.ok:
+                    stats_data = stats_res.json()
+                    if stats_data.get("status") == "available":
+                        summary = stats_data.get("summary", {})
+                        stats = stats_data.get("stats", {})
+                        
+                        st.metric("📦 Code Chunks", summary.get("chunks_total", 0))
+                        st.metric("🧬 Total Vectors", stats.get("total_vectors", 0))
+                        st.metric("📐 Dimension", stats.get("dimension", 0))
+                        st.success(f"✅ {summary.get('status', 'Ready')}")
+                    else:
+                        st.warning(f"⚠️ {stats_data.get('message', 'Pinecone unavailable')}")
+            except Exception as e:
+                st.warning(f"Could not fetch stats: {str(e)[:50]}")
     
     st.divider()
     

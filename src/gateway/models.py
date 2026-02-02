@@ -115,3 +115,34 @@ class IndexJobStatusResponse(BaseModel):
 
     correlation_id: str
     """Correlation ID for tracing"""
+
+
+class IndexJobStatusResponse(BaseModel):
+    """Index job status response."""
+
+    job_id: str
+    """Job ID"""
+
+    status: str
+    """Job status: pending, running, completed, failed"""
+
+    progress: Optional[float] = None
+    """Progress percentage (0-100)"""
+
+    files_processed: Optional[int] = None
+    """Files processed so far"""
+
+    entities_created: Optional[int] = None
+    """Entities created so far"""
+
+    packages_created: Optional[int] = None
+    """Packages created so far"""
+
+    relationships_created: Optional[int] = None
+    """Relationships created so far"""
+
+    error: Optional[str] = None
+    """Error message if failed"""
+
+    correlation_id: str
+    """Correlation ID for tracing"""
