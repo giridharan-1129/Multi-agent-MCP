@@ -292,7 +292,11 @@ class FindPatternsTool(MCPTool):
     description: str = "Detect design patterns in the codebase"
     category: str = "analysis"
 
-    async def execute(self, pattern_type: Optional[str] = None) -> ToolResult:
+    async def execute(
+        self, 
+        pattern_type: Optional[str] = None,
+        **kwargs
+    ) -> ToolResult:
         """
         Find patterns.
 

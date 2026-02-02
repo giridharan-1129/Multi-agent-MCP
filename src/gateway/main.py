@@ -29,6 +29,7 @@ from .routes import (
     analysis_router,
     embeddings_router,
     graph_visualization_router,
+    agentic_router,
 )
 
 logger = get_logger(__name__)
@@ -174,6 +175,8 @@ app.include_router(analysis_router)
 app.include_router(rag_chat_router)
 app.include_router(graph_visualization_router)
 app.include_router(embeddings_router)
+app.include_router(agentic_router)  # ← TRUE AGENTIC AI
+
 
 if __name__ == "__main__":
     import uvicorn

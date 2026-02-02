@@ -17,13 +17,12 @@ router = APIRouter(tags=["analysis"], prefix="/api/analysis")
 
 
 @router.post("/function")
-async def analyze_function(name: str, module: Optional[str] = None):
+async def analyze_function(payload: dict):
     """
     Analyze a function.
 
     Args:
-        name: Function name
-        module: Optional module filter
+        payload: {"name": "function_name", "module": "optional_module"}
 
     Returns:
         Function analysis including signature, logic, and usage
@@ -32,6 +31,12 @@ async def analyze_function(name: str, module: Optional[str] = None):
     set_correlation_id(correlation_id)
 
     try:
+        name = payload.get("name")
+        module = payload.get("module")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
         code_analyst = get_code_analyst()
 
         result = await code_analyst.execute_tool(
@@ -59,13 +64,12 @@ async def analyze_function(name: str, module: Optional[str] = None):
 
 
 @router.post("/class")
-async def analyze_class(name: str, module: Optional[str] = None):
+async def analyze_class(payload: dict):
     """
     Analyze a class.
 
     Args:
-        name: Class name
-        module: Optional module filter
+        payload: {"name": "class_name", "module": "optional_module"}
 
     Returns:
         Class analysis including methods, inheritance, and patterns
@@ -74,6 +78,12 @@ async def analyze_class(name: str, module: Optional[str] = None):
     set_correlation_id(correlation_id)
 
     try:
+        name = payload.get("name")
+        module = payload.get("module")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
         code_analyst = get_code_analyst()
 
         result = await code_analyst.execute_tool(
@@ -101,13 +111,12 @@ async def analyze_class(name: str, module: Optional[str] = None):
 
 
 @router.post("/patterns")
-async def find_patterns(scope: Optional[str] = None, pattern_type: Optional[str] = None):
+async def find_patterns(payload: dict):
     """
     Find design patterns in code.
 
     Args:
-        scope: Code scope to search (module, file, or package name)
-        pattern_type: Pattern type filter (singleton, factory, decorator, etc.)
+        payload: {"pattern_type": "optional_pattern_type"}
 
     Returns:
         Detected patterns with locations and descriptions
@@ -116,12 +125,13 @@ async def find_patterns(scope: Optional[str] = None, pattern_type: Optional[str]
     set_correlation_id(correlation_id)
 
     try:
+        pattern_type = payload.get("pattern_type")
+        
         code_analyst = get_code_analyst()
 
         result = await code_analyst.execute_tool(
             "find_patterns",
             {
-                "scope": scope,
                 "pattern_type": pattern_type,
             },
         )
@@ -129,10 +139,10 @@ async def find_patterns(scope: Optional[str] = None, pattern_type: Optional[str]
         if not result.success:
             raise HTTPException(status_code=400, detail=result.error)
 
-        logger.info("Patterns found", scope=scope, pattern_type=pattern_type)
+        logger.info("Patterns found", pattern_type=pattern_type)
         return {
             "patterns": result.data.get("patterns", []),
-            "count": result.data.get("count", 0),
+            "count": result.data.get("total", 0),
             "correlation_id": correlation_id,
         }
 
@@ -144,13 +154,12 @@ async def find_patterns(scope: Optional[str] = None, pattern_type: Optional[str]
 
 
 @router.post("/compare")
-async def compare_implementations(entity1: str, entity2: str):
+async def compare_implementations(payload: dict):
     """
     Compare two code implementations.
 
     Args:
-        entity1: First entity name
-        entity2: Second entity name
+        payload: {"entity1": "first_entity", "entity2": "second_entity"}
 
     Returns:
         Comparison analysis showing similarities and differences
@@ -159,6 +168,12 @@ async def compare_implementations(entity1: str, entity2: str):
     set_correlation_id(correlation_id)
 
     try:
+        entity1 = payload.get("entity1")
+        entity2 = payload.get("entity2")
+        
+        if not entity1 or not entity2:
+            raise HTTPException(status_code=400, detail="entity1 and entity2 are required")
+        
         code_analyst = get_code_analyst()
 
         result = await code_analyst.execute_tool(

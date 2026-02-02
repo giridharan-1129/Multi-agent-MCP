@@ -323,6 +323,7 @@ class IndexRepositoryTool(MCPTool):
                         )
                         relationships_created += 1
                     elif rel_type == "INHERITS_FROM":
+                        # ✅ Always create INHERITS_FROM, even for external classes
                         await neo4j.create_relationship(
                             source_name=rel["source"],
                             source_label="Class",

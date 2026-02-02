@@ -101,50 +101,33 @@ class RelationshipBuilder:
         entity_lookup: Dict[tuple, str],
     ):
         """
-        Build inheritance relationships - ONLY for classes that exist in indexed code.
-
-        Args:
-            entities: List of entities
-
-        Returns:
-            List of inheritance relationships
+        Build inheritance relationships - for both internal and external classes.
         """
         relationships = []
 
         for entity in entities:
             if entity["type"] == "Class" and entity.get("bases"):
                 for base in entity["bases"]:
-                    # Extract class name from base (handles Module.ClassName)
                     class_name = base.split(".")[-1] if "." in base else base
-
-                    # ✅ Only create relationship if base class exists in indexed code
                     target_module = entity_lookup.get((class_name, "Class"))
                     
-                    if target_module:
-                        relationship = {
-                            "source": entity["name"],
-                            "source_module": entity.get("module"),
-                            "target": class_name,
-                            "target_module": target_module,
-                            "type": "INHERITS_FROM",
-                            "line_number": entity.get("line_number"),
-                        }
+                    # ✅ Create relationship EVEN IF external (e.g., Exception from builtins)
+                    relationship = {
+                        "source": entity["name"],
+                        "source_module": entity.get("module"),
+                        "target": class_name,
+                        "target_module": target_module if target_module else "builtins",
+                        "type": "INHERITS_FROM",
+                        "line_number": entity.get("line_number"),
+                    }
+                    relationships.append(relationship)
 
-                        relationships.append(relationship)
-
-                        logger.debug(
-                            "Valid inheritance found",
-                            source=entity["name"],
-                            target=class_name,
-                            target_module=target_module,
-                        )
-                    else:
-                        logger.debug(
-                            "Skipping external inheritance",
-                            source=entity["name"],
-                            target=class_name,
-                            reason="Base class not in indexed codebase",
-                        )
+                    logger.debug(
+                        "Inheritance relationship found",
+                        source=entity["name"],
+                        target=class_name,
+                        is_external=target_module is None,
+                    )
 
         return relationships
 

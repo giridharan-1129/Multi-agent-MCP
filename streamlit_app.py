@@ -567,6 +567,21 @@ with tab_chat:
     # MAIN CHAT AREA
     st.title("Agentic Codebase Chat")
     
+    # MODE SELECTOR
+    col_mode1, col_mode2, col_spacer = st.columns([1, 1, 3])
+    with col_mode1:
+        chat_mode = st.radio(
+            "Chat Mode",
+            ["🤖 Agentic AI (NEW)", "📚 RAG Search"],
+            horizontal=True,
+            key="chat_mode_selector"
+        )
+    
+    if chat_mode == "🤖 Agentic AI (NEW)":
+        st.info("✨ **Agentic AI Mode**: GPT-4 autonomously reasons and chains tools. Shows thinking process.")
+    else:
+        st.info("📚 **RAG Mode**: Retrieves context from embeddings + graph. Fast keyword search.")
+    
     st.markdown("### Conversation History")
     
     message_container = st.container()
@@ -576,8 +591,27 @@ with tab_chat:
                 st.write(msg["content"])
                 
                 if msg["role"] == "assistant":
-                    sources = msg.get("sources", [])
-                    agents = msg.get("agents", [])
+                    # AGENTIC AI MESSAGE
+                    if "thinking_process" in msg:
+                        thinking_steps = msg.get("thinking_process", [])
+                        tools_used = msg.get("tools_used", [])
+                        iterations = msg.get("iterations", 0)
+                        
+                        st.divider()
+                        
+                        with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=False):
+                            for i, step in enumerate(thinking_steps, 1):
+                                st.caption(f"**Step {i}:** {step[:300]}...")
+                        
+                        if tools_used:
+                            st.write("**🔧 Tools Used:**")
+                            tool_str = " ".join([f'<span class="agent-badge">{t}</span>' for t in tools_used])
+                            st.markdown(tool_str, unsafe_allow_html=True)
+                    
+                    # RAG MESSAGE
+                    else:
+                        sources = msg.get("sources", [])
+                        agents = msg.get("agents", [])
                     
                     if sources:
                         # Separate pinecone and neo4j sources
@@ -669,48 +703,101 @@ with tab_chat:
         
         st.session_state.messages.append({"role": "user", "content": query})
         
-        payload = {"query": query, "session_id": st.session_state.session_id}
-        
         try:
             with st.chat_message("assistant"):
-                with st.spinner("Processing..."):
-                    res = requests.post(
-                        f"{API_BASE}/api/rag-chat",
-                        json=payload,
-                        timeout=60
-                    )
-                
-                if res.ok:
-                    data = res.json()
-                    st.session_state.session_id = data["session_id"]
-                    
-                    answer = data["response"]
-                    retrieved_context = data.get("retrieved_context", [])
-                    agents_used = data.get("agents_used", [])
-                    
-                    # Streaming effect
-                    message_placeholder = st.empty()
-                    displayed_text = ""
-                    for char in answer:
-                        displayed_text += char
-                        message_placeholder.write(displayed_text)
-                        time.sleep(0.01)
-                    
-                    st.divider()
-                    
-                    if retrieved_context:
-                        embeddings_sources = [s for s in retrieved_context if s.get('type') == 'code_chunk']
-                        graph_sources = [s for s in retrieved_context if s.get('type') == 'relationship']
+                # DETERMINE WHICH ENDPOINT TO USE
+                if chat_mode == "🤖 Agentic AI (NEW)":
+                    # ===== AGENTIC AI MODE =====
+                    with st.spinner("🧠 GPT-4 is reasoning and chaining tools..."):
+                        payload = {"query": query, "session_id": st.session_state.session_id or "streamlit-demo"}
                         
-                        if embeddings_sources:
-                            st.write("### 📝 Pinecone Code Chunks (Semantic Search)")
-                            for idx, source in enumerate(embeddings_sources, 1):
-                                with st.container(border=True):
-                                    col1, col2 = st.columns([0.8, 0.2])
-                                    
-                                    with col1:
-                                        reranked_status = "✅ Reranked" if source.get('reranked') else "⭕ Original"
-                                        st.markdown(f"""
+                        res = requests.post(
+                            f"{API_BASE}/api/agentic-chat",
+                            json=payload,
+                            timeout=120  # Agentic can take longer
+                        )
+                    
+                    if res.ok:
+                        data = res.json()
+                        answer = data["response"]
+                        thinking_process = data.get("thinking_process", [])
+                        tools_used = data.get("tools_used", [])
+                        iterations = data.get("iterations", 0)
+                        
+                        # Display answer with streaming effect
+                        message_placeholder = st.empty()
+                        displayed_text = ""
+                        for char in answer:
+                            displayed_text += char
+                            message_placeholder.write(displayed_text)
+                            time.sleep(0.01)
+                        
+                        st.divider()
+                        
+                        # SHOW AGENTIC THINKING PROCESS
+                        with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=True):
+                            for i, step in enumerate(thinking_process, 1):
+                                st.caption(f"**Step {i}:** {step[:200]}...")
+                        
+                        # SHOW TOOLS USED
+                        if tools_used:
+                            st.write("**🔧 Tools Used:**")
+                            tool_str = " ".join([f'<span class="agent-badge">{t}</span>' for t in tools_used])
+                            st.markdown(tool_str, unsafe_allow_html=True)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "thinking_process": thinking_process,
+                            "tools_used": tools_used,
+                            "iterations": iterations
+                        })
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {res.text}")
+                
+                else:
+                    # ===== RAG MODE (Original) =====
+                    payload = {"query": query, "session_id": st.session_state.session_id}
+                    
+                    with st.spinner("Processing..."):
+                        res = requests.post(
+                            f"{API_BASE}/api/rag-chat",
+                            json=payload,
+                            timeout=60
+                        )
+                    
+                    if res.ok:
+                        data = res.json()
+                        st.session_state.session_id = data["session_id"]
+                        
+                        answer = data["response"]
+                        retrieved_context = data.get("retrieved_context", [])
+                        agents_used = data.get("agents_used", [])
+                        
+                        # Streaming effect
+                        message_placeholder = st.empty()
+                        displayed_text = ""
+                        for char in answer:
+                            displayed_text += char
+                            message_placeholder.write(displayed_text)
+                            time.sleep(0.01)
+                        
+                        st.divider()
+                        
+                        if retrieved_context:
+                            embeddings_sources = [s for s in retrieved_context if s.get('type') == 'code_chunk']
+                            graph_sources = [s for s in retrieved_context if s.get('type') == 'relationship']
+                            
+                            if embeddings_sources:
+                                st.write("### 📝 Pinecone Code Chunks (Semantic Search)")
+                                for idx, source in enumerate(embeddings_sources, 1):
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([0.8, 0.2])
+                                        
+                                        with col1:
+                                            reranked_status = "✅ Reranked" if source.get('reranked') else "⭕ Original"
+                                            st.markdown(f"""
 **{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
 - **Lines:** {source.get('lines', 'N/A')}
 - **Relevance:** {source.get('relevance_percent', 'N/A')}
@@ -718,54 +805,54 @@ with tab_chat:
 - **Chunk ID:** `{source.get('chunk_id', 'N/A')}`
 - **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
 - **Model:** {source.get('embedding_model', 'N/A')}
-                                        """)
-                                        st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
-                                    
-                                    with col2:
-                                        view_key = f"view_{st.session_state.session_id}_{j}_{time.time()}"
+                                            """)
+                                            st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
+                                        
+                                        with col2:
+                                            view_key = f"view_{st.session_state.session_id}_{idx}_{time.time()}"
 
-                                        if st.button("📂 View Code", key=view_key):
-                                            st.session_state[f"show_{view_key}"] = True
+                                            if st.button("📂 View Code", key=view_key):
+                                                st.session_state[f"show_{view_key}"] = True
 
-                                        # Show code if button clicked
-                                        if st.session_state.get(f"show_{view_key}"):
-                                            st.code(source.get('content'), language="python")
-                                    st.divider()
-                                    col_title, col_x = st.columns([0.9, 0.1])
-                                    with col_title:
-                                        st.subheader(f"📄 {source.get('file_name', 'unknown')} (Lines {source.get('lines', 'N/A')})")
-                                    with col_x:
-                                        if st.button("✕", key=f"chunk_close_{idx}"):
-                                            st.session_state[f"show_chunk_{idx}"] = False
-                                    
-                                    st.code(source.get('content', source.get('preview', 'Code not available')), language=source.get('language', 'python'))
-                                    st.divider()
-                        
-                        if graph_sources:
-                            st.write("### 🔗 Neo4j Entity Relationships (Graph)")
-                            for idx, source in enumerate(graph_sources, 1):
-                                with st.container(border=True):
-                                    st.markdown(f"""
+                                            # Show code if button clicked
+                                            if st.session_state.get(f"show_{view_key}"):
+                                                st.code(source.get('content'), language="python")
+                                        st.divider()
+                                        col_title, col_x = st.columns([0.9, 0.1])
+                                        with col_title:
+                                            st.subheader(f"📄 {source.get('file_name', 'unknown')} (Lines {source.get('lines', 'N/A')})")
+                                        with col_x:
+                                            if st.button("✕", key=f"chunk_close_{idx}"):
+                                                st.session_state[f"show_chunk_{idx}"] = False
+                                        
+                                        st.code(source.get('content', source.get('preview', 'Code not available')), language=source.get('language', 'python'))
+                                        st.divider()
+                            
+                            if graph_sources:
+                                st.write("### 🔗 Neo4j Entity Relationships (Graph)")
+                                for idx, source in enumerate(graph_sources, 1):
+                                    with st.container(border=True):
+                                        st.markdown(f"""
 **{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
 - **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
 - **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
 - **Module:** {source.get('module', 'N/A')}
 - **Line:** {source.get('line_number', 'N/A')}
-                                    """)
-                    
-                    if agents_used:
-                        agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents_used])
-                        st.markdown(agent_str, unsafe_allow_html=True)
-                    
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer,
-                        "sources": retrieved_context,
-                        "agents": agents_used
-                    })
-                    st.rerun()
-                else:
-                    st.error(f"Error: {res.text}")
+                                        """)
+                        
+                        if agents_used:
+                            agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents_used])
+                            st.markdown(agent_str, unsafe_allow_html=True)
+                        
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": answer,
+                            "sources": retrieved_context,
+                            "agents": agents_used
+                        })
+                        st.rerun()
+                    else:
+                        st.error(f"Error: {res.text}")
         
         except requests.exceptions.Timeout:
             st.error(" Timeout")

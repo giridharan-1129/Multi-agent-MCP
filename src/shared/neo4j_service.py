@@ -230,6 +230,20 @@ class Neo4jService:
                     source_prop = 'path' if source_label == 'File' else 'name'
                     target_prop = 'path' if target_label == 'File' else 'name'
 
+                    # ✅ For external classes (e.g., Exception from builtins), MERGE them first
+                    if target_label in ['Class', 'Function'] and not session.run(
+                        f"MATCH (b:{target_label} {{{target_prop}: $target}}) RETURN b LIMIT 1",
+                        {"target": target_name}
+                    ).single():
+                        # External entity doesn't exist, create it as a stub
+                        session.run(
+                            f"""
+                            MERGE (b:{target_label} {{{target_prop}: $target}})
+                            SET b.external = true
+                            """,
+                            {"target": target_name}
+                        )
+
                     session.run(
                         f"""
                         MATCH (a:{source_label} {{{source_prop}: $source}})
@@ -411,7 +425,8 @@ class Neo4jService:
         def _run():
             with self.driver.session(database=self.database) as session:
                 cypher = """
-                MATCH (source {name: $name})
+                MATCH (source)
+                WHERE source.name = $name
                 MATCH (source)-[r]->(target)
                 WHERE type(r) IN ['IMPORTS', 'CALLS', 'INHERITS_FROM', 'CONTAINS']
                 RETURN {
@@ -435,7 +450,8 @@ class Neo4jService:
         def _run():
             with self.driver.session(database=self.database) as session:
                 cypher = """
-                MATCH (target {name: $name})
+                MATCH (target)
+                WHERE target.name = $name
                 MATCH (source)-[r]->(target)
                 WHERE type(r) IN ['IMPORTS', 'CALLS', 'INHERITS_FROM', 'CONTAINS']
                 RETURN {
@@ -460,7 +476,9 @@ class Neo4jService:
                 # === BELONGS_TO (upward ownership) ===
                 if relationship_type == "BELONGS_TO":
                     cypher = """
-                    MATCH (e {name: $name})<-[:DEFINES]-(f:File)<-[:CONTAINS]-(p:Package)
+                    MATCH (e)
+                    WHERE e.name = $name
+                    MATCH (e)<-[:DEFINES]-(f:File)<-[:CONTAINS]-(p:Package)
                     RETURN {
                         target_name: p.name,
                         target_type: "Package",
@@ -476,7 +494,9 @@ class Neo4jService:
                 # Smart CONTAINS
                 if relationship_type == "CONTAINS":
                     cypher = """
-                    MATCH (p:Package {name: $name})-[:CONTAINS]->(f:File)
+                    MATCH (p:Package)
+                    WHERE p.name = $name
+                    MATCH (p)-[:CONTAINS]->(f:File)
                     RETURN {
                         target_name: f.path,
                         target_type: "File",
@@ -487,10 +507,12 @@ class Neo4jService:
                     result = session.run(cypher, {"name": entity_name})
                     return [r["relationship"] for r in result]
 
-                # === DEFINES (File â†’ Class/Function ONLY) ===
+                # === DEFINES (File → Class/Function ONLY) ===
                 if relationship_type == "DEFINES":
                     cypher = """
-                    MATCH (f:File {path: $name})-[:DEFINES]->(e)
+                    MATCH (f:File)
+                    WHERE f.path = $name
+                    MATCH (f)-[:DEFINES]->(e)
                     RETURN {
                         target_name: e.name,
                         target_type: labels(e)[0],
@@ -504,7 +526,9 @@ class Neo4jService:
                 # === Other relationships (bidirectional) ===
                 if relationship_type:
                     cypher = """
-                    MATCH (e {name: $name})-[r]-(other)
+                    MATCH (e)
+                    WHERE e.name = $name
+                    MATCH (e)-[r]-(other)
                     WHERE type(r) = $rel
                     RETURN {
                         target_name: coalesce(other.name, other.path),
@@ -519,7 +543,9 @@ class Neo4jService:
                     )
                 else:
                     cypher = """
-                    MATCH (e {name: $name})-[r]-(other)
+                    MATCH (e)
+                    WHERE e.name = $name
+                    MATCH (e)-[r]-(other)
                     RETURN {
                         target_name: coalesce(other.name, other.path),
                         target_type: labels(other)[0],
@@ -532,8 +558,27 @@ class Neo4jService:
                 return [r["relationship"] for r in result]
 
         return await run_in_threadpool(_run)
+    async def create_external_class_node(
+        self,
+        name: str,
+        module: str = "builtins",
+    ):
+        """Create a stub node for external classes (e.g., Exception from builtins)."""
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (c:Class {name: $name, module: $module})
+                    SET c.external = true,
+                        c.docstring = "External class"
+                    """,
+                    {
+                        "name": name,
+                        "module": module,
+                    },
+                )
 
-
+        await run_in_threadpool(_run)
     async def get_graph_statistics(self) -> Dict[str, Any]:
             """Get graph statistics."""
             try:

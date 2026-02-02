@@ -15,6 +15,7 @@ from .analysis import router as analysis_router
 from .rag_chat import router as rag_chat_router
 from .graph_visualization import router as graph_visualization_router
 from .embeddings import router as embeddings_router
+from .agentic_chat import router as agentic_router
 __all__ = [
     "health_router",
     "chat_router",
@@ -25,4 +26,6 @@ __all__ = [
     "rag_chat_router",
     "graph_visualization_router",
     "embeddings_router",
+    "agentic_router",
+
 ]
