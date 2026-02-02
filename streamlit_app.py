@@ -592,15 +592,26 @@ with tab_chat:
                                     col1, col2 = st.columns([0.85, 0.15])
                                     
                                     with col1:
-                                        st.markdown(f"""
-**{source.get('file_name', 'unknown')}** | Lines {source.get('lines', 'N/A')} | {source.get('language', 'python')}
-- Relevance: {source.get('relevance_percent', 'N/A')}
-- Reranked: {'✅ Yes' if source.get('reranked') else '❌ No'}
-- Repo: {source.get('repo_id', 'N/A')}
-- Start Line: {source.get('start_line', 'N/A')}
-- End Line: {source.get('end_line', 'N/A')}
-- Preview: {source.get('preview', 'N/A')[:120]}...
-                                        """)
+                                        # Build citation text, omitting N/A and None values
+                                        citation_parts = [f"**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}"]
+
+                                        if source.get('lines') and source.get('lines') != 'N/A':
+                                            citation_parts.append(f"Lines {source.get('lines')}")
+
+                                        if source.get('relevance_percent') and source.get('relevance_percent') != 'N/A':
+                                            citation_parts.append(f"Relevance: {source.get('relevance_percent')}")
+
+                                        if source.get('reranked') is not None:
+                                            citation_parts.append(f"Reranked: {'✅ Yes' if source.get('reranked') else '❌ No'}")
+
+                                        if source.get('start_line') and source.get('start_line') != 'N/A':
+                                            citation_parts.append(f"Line {source.get('start_line')}-{source.get('end_line', 'N/A')}")
+
+                                        if source.get('preview') and source.get('preview') != 'N/A':
+                                            preview = source.get('preview')[:80] + "..." if len(source.get('preview', '')) > 80 else source.get('preview')
+                                            citation_parts.append(f"Preview: {preview}")
+
+                                        st.markdown(" | ".join(citation_parts))
                                     
                                     with col2:
                                         if st.button("📂 View Code", key=f"pinecone_view_{j}", use_container_width=True):
@@ -624,13 +635,24 @@ with tab_chat:
                             st.write("**🔗 Neo4j Entity Relationships (Graph)**")
                             for k, source in enumerate(neo4j_sources, 1):
                                 with st.container(border=True):
-                                    st.markdown(f"""
-**{source.get('entity_type', 'Unknown')}**: {source.get('entity', 'unknown')}
-- Dependencies: {', '.join(source.get('dependencies', [])[:3]) or 'None'}
-- Used by: {', '.join(source.get('used_by', [])[:3]) or 'Not used'}
-- Module: {source.get('module', 'N/A')}
-- Type: {source.get('node_type', 'N/A')}
-                                    """)
+                                    # Build Neo4j citation, omitting empty/N/A values
+                                    neo4j_lines = [f"**{source.get('entity_type', 'Unknown')}**: {source.get('entity', 'unknown')}"]
+
+                                    deps = source.get('dependencies', [])
+                                    if deps and deps != ['None'] and all(d != 'None' and d != 'N/A' for d in deps):
+                                        neo4j_lines.append(f"- Dependencies: {', '.join(deps[:3])}")
+
+                                    used_by = source.get('used_by', [])
+                                    if used_by and used_by != ['Not used'] and all(u != 'Not used' and u != 'N/A' for u in used_by):
+                                        neo4j_lines.append(f"- Used by: {', '.join(used_by[:3])}")
+
+                                    if source.get('module') and source.get('module') != 'N/A':
+                                        neo4j_lines.append(f"- Module: {source.get('module')}")
+
+                                    if source.get('node_type') and source.get('node_type') != 'N/A':
+                                        neo4j_lines.append(f"- Type: {source.get('node_type')}")
+
+                                    st.markdown("\n".join(neo4j_lines))
                     
                     if agents:
                         agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents])
@@ -700,11 +722,14 @@ with tab_chat:
                                         st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
                                     
                                     with col2:
-                                        if st.button("📂 View", key=f"chunk_view_{idx}"):
-                                            st.session_state[f"show_chunk_{idx}"] = True
-                                
-                                # Chunk code popup
-                                if st.session_state.get(f"show_chunk_{idx}"):
+                                        view_key = f"view_{st.session_state.session_id}_{j}_{time.time()}"
+
+                                        if st.button("📂 View Code", key=view_key):
+                                            st.session_state[f"show_{view_key}"] = True
+
+                                        # Show code if button clicked
+                                        if st.session_state.get(f"show_{view_key}"):
+                                            st.code(source.get('content'), language="python")
                                     st.divider()
                                     col_title, col_x = st.columns([0.9, 0.1])
                                     with col_title:

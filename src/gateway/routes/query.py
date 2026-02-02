@@ -235,7 +235,72 @@ async def get_related(payload: dict):
         logger.error("Failed to get related entities", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/inheritance")
+async def get_inheritance(payload: dict):
+    """
+    Find all classes that inherit from a given class.
 
+    Args:
+        payload: {"name": "APIRouter"}
+
+    Returns:
+        List of classes that inherit from the specified class
+    """
+    correlation_id = generate_correlation_id()
+    set_correlation_id(correlation_id)
+
+    try:
+        name = payload.get("name")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
+        neo4j = get_neo4j_service()
+
+        # Query: Find classes that inherit from the target class
+        cypher = """
+        MATCH (parent:Class {name: $name})
+        OPTIONAL MATCH (child:Class)-[:INHERITS_FROM]->(parent)
+        RETURN {
+            parent_class: parent.name,
+            parent_module: parent.module,
+            child_classes: collect(DISTINCT {
+                name: child.name,
+                module: child.module,
+                line_number: child.line_number
+            })
+        } as inheritance
+        """
+        
+        results = await neo4j.execute_query(cypher, {"name": name})
+        
+        if not results:
+            logger.warning(f"No inheritance found for {name}")
+            return {
+                "parent_class": name,
+                "child_classes": [],
+                "message": f"No classes found that inherit from {name}",
+                "correlation_id": correlation_id,
+            }
+        
+        inheritance = results[0].get("inheritance", {})
+        child_classes = inheritance.get("child_classes", [])
+        
+        logger.info(f"Found {len(child_classes)} classes inheriting from {name}")
+        
+        return {
+            "parent_class": name,
+            "child_classes": child_classes,
+            "count": len(child_classes),
+            "correlation_id": correlation_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get inheritance", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+        
 @router.post("/extract-keywords")
 async def extract_keywords(payload: dict):
     """

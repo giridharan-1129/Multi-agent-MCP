@@ -101,7 +101,7 @@ class RelationshipBuilder:
         entity_lookup: Dict[tuple, str],
     ):
         """
-        Build inheritance relationships.
+        Build inheritance relationships - ONLY for classes that exist in indexed code.
 
         Args:
             entities: List of entities
@@ -117,24 +117,34 @@ class RelationshipBuilder:
                     # Extract class name from base (handles Module.ClassName)
                     class_name = base.split(".")[-1] if "." in base else base
 
-                    relationship = {
+                    # ✅ Only create relationship if base class exists in indexed code
+                    target_module = entity_lookup.get((class_name, "Class"))
+                    
+                    if target_module:
+                        relationship = {
                             "source": entity["name"],
                             "source_module": entity.get("module"),
                             "target": class_name,
-                            "target_module": (
-                                entity_lookup.get((class_name, "Class"))
-                            ),
+                            "target_module": target_module,
                             "type": "INHERITS_FROM",
                             "line_number": entity.get("line_number"),
                         }
 
-                    relationships.append(relationship)
+                        relationships.append(relationship)
 
-                    logger.debug(
-                        "Inheritance relationship found",
-                        source=entity["name"],
-                        target=class_name,
-                    )
+                        logger.debug(
+                            "Valid inheritance found",
+                            source=entity["name"],
+                            target=class_name,
+                            target_module=target_module,
+                        )
+                    else:
+                        logger.debug(
+                            "Skipping external inheritance",
+                            source=entity["name"],
+                            target=class_name,
+                            reason="Base class not in indexed codebase",
+                        )
 
         return relationships
 

@@ -236,6 +236,7 @@ class ASTParser:
             "line_number": node.lineno,
             "docstring": docstring,
             "bases": [self._get_name(b) for b in node.bases],
+            "bases_full": [ast.unparse(b) for b in node.bases],
             "package": self.current_package,
             "decorators": self._get_decorators(node),
         }
