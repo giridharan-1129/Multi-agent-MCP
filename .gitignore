@@ -1,4 +1,81 @@
+# Build artifacts
+*.egg-info/
+*.dist-info/
+build/
+dist/
+*.egg
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# Environment
 .env
 .env.local
-.env.example.env
-/venv
+*.env.local
+.venv
+venv/
+env/
+ENV/
+
+# Dependencies
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Backup files
+*.bak
+*.backup
+*.orig
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Test coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.hypothesis/
+
+# Neo4j data
+neo4j_data/
+data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# IDE specific
+.vscode/settings.json
+
+# Docker
+docker-compose.override.yml
+
+# OS specific
+.AppleDouble
+.LSOverride
