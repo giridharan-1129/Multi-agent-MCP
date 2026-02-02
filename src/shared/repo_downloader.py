@@ -63,23 +63,9 @@ class RepositoryDownloader:
     ) -> str:
         """
         Download a GitHub repository.
-
-        Clones the repository to the specified path. If already exists,
-        updates it instead of re-cloning.
-
-        Args:
-            repo_url: GitHub repository URL (e.g., https://github.com/user/repo)
-            clone_path: Where to clone the repo (uses default if not specified)
-            depth: Git depth (for shallow clone, default: None for full clone)
-
-        Returns:
-            Path to cloned repository
-
-        Raises:
-            RepositoryCloneError: If clone/update fails
+        ...
         """
         if not clone_path:
-            # Extract repo name from URL
             repo_name = repo_url.rstrip("/").split("/")[-1]
             if repo_name.endswith(".git"):
                 repo_name = repo_name[:-4]
@@ -91,7 +77,20 @@ class RepositoryDownloader:
             # Check if repo already exists
             if os.path.exists(clone_path):
                 logger.info("Repository already exists, updating", path=clone_path)
-                await self._update_repo(clone_path)
+                try:
+                    await self._update_repo(clone_path)
+                except Exception as update_err:
+                    # Update failed - try fresh clone
+                    logger.info("Update failed, attempting fresh clone", path=clone_path)
+                    try:
+                        shutil.rmtree(clone_path)
+                        logger.info("Removed old repo, cloning fresh", path=clone_path)
+                    except Exception as cleanup_err:
+                        logger.error("Failed to cleanup old repo", path=clone_path, error=str(cleanup_err))
+                        raise RepositoryCloneError(repo_url=repo_url, error_detail=f"Failed to cleanup old repo: {str(cleanup_err)}")
+                    
+                    # Now clone fresh
+                    await self._clone_repo(repo_url, clone_path, depth)
             else:
                 logger.info("Cloning repository", url=repo_url, path=clone_path)
                 await self._clone_repo(repo_url, clone_path, depth)
@@ -154,12 +153,23 @@ class RepositoryDownloader:
         def _do_update():
             try:
                 repo = Repo(repo_path)
-                repo.remotes.origin.pull()
+                # Fetch latest changes
+                repo.remotes.origin.fetch()
+                # Reset to latest
+                repo.heads.master.reset(index=True, working_tree=True)
                 logger.info("Repository updated successfully", path=repo_path)
-            except GitCommandError as e:
+            except Exception as e:
+                logger.warning(f"Update failed, will re-clone: {str(e)}")
+                # If update fails, remove and re-clone
+                import shutil
+                try:
+                    shutil.rmtree(repo_path)
+                    logger.info(f"Removed old repo, will re-clone: {repo_path}")
+                except Exception as cleanup_err:
+                    logger.error(f"Failed to cleanup: {str(cleanup_err)}")
                 raise RepositoryCloneError(
                     repo_url=repo_path,
-                    error_detail=f"Failed to update: {str(e)}",
+                    error_detail=f"Update failed, need fresh clone",
                 )
 
         await loop.run_in_executor(None, _do_update)

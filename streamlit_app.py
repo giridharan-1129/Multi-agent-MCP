@@ -572,15 +572,15 @@ with tab_chat:
     with col_mode1:
         chat_mode = st.radio(
             "Chat Mode",
-            ["🤖 Agentic AI (NEW)", "📚 RAG Search"],
+            ["Agentic AI", "RAG Search"],
             horizontal=True,
             key="chat_mode_selector"
         )
     
-    if chat_mode == "🤖 Agentic AI (NEW)":
+    if chat_mode == "Agentic AI":
         st.info("✨ **Agentic AI Mode**: GPT-4 autonomously reasons and chains tools. Shows thinking process.")
     else:
-        st.info("📚 **RAG Mode**: Retrieves context from embeddings + graph. Fast keyword search.")
+        st.info("**RAG Mode**: Retrieves context from embeddings + graph. Fast keyword search.")
     
     st.markdown("### Conversation History")
     
@@ -706,7 +706,7 @@ with tab_chat:
         try:
             with st.chat_message("assistant"):
                 # DETERMINE WHICH ENDPOINT TO USE
-                if chat_mode == "🤖 Agentic AI (NEW)":
+                if chat_mode == "Agentic AI":
                     # ===== AGENTIC AI MODE =====
                     with st.spinner("🧠 GPT-4 is reasoning and chaining tools..."):
                         payload = {"query": query, "session_id": st.session_state.session_id or "streamlit-demo"}
@@ -1044,22 +1044,26 @@ with tab_graph:
                     
                     st.success(f" All {len(cypher_queries)} queries executed - {len(all_results)} total results")
                     
-                    # Show query status summary
-                    import pandas as pd
-                    status_df = pd.DataFrame(query_status_list)
+                   # Show query status summary (text only, no dataframe)
                     with st.expander(" Query Execution Status"):
-                        st.dataframe(status_df, use_container_width=True)
+                        for status in query_status_list:
+                            query_num = status.get("Query", "?")
+                            status_icon = "✅" if status.get("Status") == " Success" else "❌"
+                            results = status.get("Results", 0)
+                            st.write(f"{status_icon} Query {query_num}: {results} results")
                     
                 except Exception as e:
                     st.error(f"Step 2 failed: {str(e)}")
                     st.stop()
             
-            # Display query results in a table
+
             # STEP 2.5: Display query results in a table
             with st.expander(f"📊 All Query Results ({len(all_results)} results)", expanded=False):
-                import pandas as pd
                 if all_results:
-                    st.dataframe(pd.DataFrame(all_results), use_container_width=True)
+                    # Display as JSON instead of dataframe (avoids pyarrow issues)
+                    st.json(all_results[:5])  # Show first 5 results
+                    if len(all_results) > 5:
+                        st.caption(f"... and {len(all_results) - 5} more results")
                 else:
                     st.warning("No results to display")
             
@@ -1075,18 +1079,27 @@ with tab_graph:
                         f"{API_BASE}/api/graph/generate-mermaid",
                         json={"query_results": all_results},
                         params={"entity_name": entity_name, "entity_type": selected_type},
-                        timeout=15
+                        timeout=60
                     )
                     
                     if mermaid_response.ok:
                         mermaid_data = mermaid_response.json()
                         mermaid_code = mermaid_data.get("mermaid_code", "")
                         
-                        if mermaid_code:
+                        if mermaid_code and mermaid_code.strip():
                             st.success("✅ Diagram generated!")
-                            render_mermaid_diagram(mermaid_code, height=600, diagram_title=f"📊 {entity_name} Relationships")
+                            st.divider()
+                            
+                            # Render with proper error handling
+                            try:
+                                render_mermaid_diagram(mermaid_code, height=600, diagram_title=f"📊 {entity_name} Relationships")
+                            except Exception as render_err:
+                                st.warning(f"Mermaid rendering issue: {str(render_err)[:100]}")
+                                st.info("**Mermaid Code (for debugging):**")
+                                st.code(mermaid_code, language="mermaid")
                         else:
-                            st.warning("No diagram generated")
+                            st.warning("No diagram code generated")
+                            st.info(f"Query returned {len(all_results)} results but no relationships found for diagram")
                     else:
                         st.error(f"Mermaid generation failed: {mermaid_response.text}")
                 except Exception as e:

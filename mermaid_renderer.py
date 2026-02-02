@@ -8,14 +8,10 @@ import json
 from typing import List, Dict, Any
 
 
-def render_mermaid_diagram(mermaid_code: str, height: int = 600, diagram_title: str = "📊 Diagram"):
+def render_mermaid_diagram(mermaid_code: str, height: int = 900, diagram_title: str = "📊 Diagram"):
     """
     Render a Mermaid diagram using HTML components.
-    
-    Args:
-        mermaid_code: Mermaid diagram code
-        height: Height in pixels
-        diagram_title: Title to display
+    Optimized for large diagrams with native browser zoom.
     """
     st.markdown(f"### {diagram_title}")
     
@@ -23,39 +19,127 @@ def render_mermaid_diagram(mermaid_code: str, height: int = 600, diagram_title: 
     <!DOCTYPE html>
     <html>
     <head>
-        <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+        <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
         <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            html, body {{ width: 100%; height: 100%; }}
             body {{
                 background-color: #0e1117;
-                margin: 0;
-                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
+                align-items: center;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto;
+                overflow: hidden;
+            }}
+            #diagram {{
+                background-color: #161b22;
+                border-radius: 8px;
+                border: 1px solid #30363d;
+                width: 98%;
+                height: 95%;
                 display: flex;
                 justify-content: center;
                 align-items: center;
-                min-height: {height}px;
+                overflow: auto;
+                position: relative;
+            }}
+            #svg-container {{
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                padding: 20px;
+            }}
+            svg {{ 
+                max-width: none;
+                height: auto;
+                display: block;
             }}
             .mermaid {{
-                background-color: #161b22;
-                border-radius: 8px;
-                padding: 20px;
-                border: 1px solid #30363d;
+                display: flex;
+                justify-content: center;
+            }}
+            .controls {{
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                background: rgba(255, 255, 255, 0.15);
+                padding: 8px 12px;
+                border-radius: 4px;
+                font-size: 11px;
+                color: #8b949e;
+                z-index: 100;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }}
+            .error {{ 
+                color: #ff6b6b; 
+                padding: 40px; 
+                text-align: center;
+                font-size: 16px;
             }}
         </style>
     </head>
     <body>
-        <div class="mermaid">
-{mermaid_code}
+        <div id="diagram">
+            <div class="controls">Use browser zoom (Ctrl/Cmd +/-) to zoom in/out</div>
+            <div id="svg-container">Loading diagram...</div>
         </div>
         <script>
-            mermaid.initialize({{startOnLoad: true, theme: 'dark'}});
-            mermaid.contentLoaded();
+            async function renderDiagram() {{
+                mermaid.initialize({{ 
+                    startOnLoad: false,
+                    theme: 'dark',
+                    securityLevel: 'loose',
+                    mindmap: {{
+                        padding: 50,
+                        maxNodeWidth: 350
+                    }},
+                    flowchart: {{
+                        nodeSpacing: 50,
+                        rankSpacing: 50
+                    }}
+                }});
+                
+                try {{
+                    const mermaidCode = `{mermaid_code}`;
+                    const {{svg}} = await mermaid.render('diagram-' + Date.now(), mermaidCode);
+                    
+                    const container = document.getElementById('svg-container');
+                    container.innerHTML = svg;
+                    
+                    // Scale up the SVG
+                    const svgElement = container.querySelector('svg');
+                    if (svgElement) {{
+                        // Make it bigger by 30%
+                        const scale = 1.3;
+                        svgElement.setAttribute('transform', `scale(${{scale}})`);
+                        
+                        // Adjust container size
+                        const bbox = svgElement.getBBox();
+                        const newWidth = bbox.width * scale + 40;
+                        const newHeight = bbox.height * scale + 40;
+                        
+                        container.style.minWidth = newWidth + 'px';
+                        container.style.minHeight = newHeight + 'px';
+                    }}
+                }} catch (e) {{
+                    console.error('Mermaid error:', e);
+                    document.getElementById('svg-container').innerHTML = '<div class="error">❌ Rendering failed<br><br>' + e.message + '</div>';
+                }}
+            }}
+            
+            renderDiagram();
         </script>
     </body>
     </html>
     """
     
-    components.html(html_content, height=height + 50, scrolling=False)
-
+    try:
+        components.html(html_content, height=height, scrolling=True)
+    except Exception as e:
+        st.error(f"Failed to render mermaid: {str(e)}")
+        st.warning("Fallback: Displaying raw mermaid code")
+        st.code(mermaid_code, language="mermaid")
 
 def render_relationship_graph(
     entity_name: str,

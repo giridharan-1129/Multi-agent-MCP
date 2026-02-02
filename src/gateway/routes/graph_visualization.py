@@ -67,6 +67,11 @@ def _extract_all_entities(query_results: List[Dict]) -> Dict[str, List[str]]:
 
 
 def _build_relationship_connections(query_results: List[Dict]) -> List[Dict[str, Any]]:
+    """
+    Extract connections from the actual Neo4j query result structure.
+    Results have keys: c, cd, f, d, parent, calls_target, method, fd, md
+    Where each represents a different optional relationship path.
+    """
     connections = []
     seen = set()
     
@@ -74,35 +79,95 @@ def _build_relationship_connections(query_results: List[Dict]) -> List[Dict[str,
         if not isinstance(result, dict):
             continue
         
-        # Extract string values only
-        source = None
-        target = None
-        rel_type = "CONNECTS"
+        source = result.get('c')  # Always the central Class node
+        if not source or not isinstance(source, dict):
+            continue
         
-        for key, val in result.items():
-            if isinstance(val, str) and val and val != "None":
-                if not source:
-                    source = val
-                elif not target:
-                    target = val
+        source_name = source.get('name')
+        if not source_name:
+            continue
         
-        if result.get('relationship_type'):
-            rel_type = str(result.get('relationship_type'))
-        elif result.get('type'):
-            rel_type = str(result.get('type'))
+        # Check each possible relationship type
+        # HAS_METHOD -> method
+        if result.get('method') and isinstance(result['method'], dict):
+            target = result['method']
+            target_name = target.get('name')
+            if target_name:
+                conn_key = (source_name, target_name, 'HAS_METHOD')
+                if conn_key not in seen:
+                    seen.add(conn_key)
+                    connections.append({
+                        "source": source_name,
+                        "target": target_name,
+                        "relationship": "HAS_METHOD"
+                    })
         
-        if source and target:
-            key = (source, target, rel_type)
-            if key not in seen:
-                seen.add(key)
-                connections.append({
-                    "source": source,
-                    "target": target,
-                    "relationship": rel_type
-                })
+        # INHERITS_FROM -> parent
+        if result.get('parent') and isinstance(result['parent'], dict):
+            target = result['parent']
+            target_name = target.get('name')
+            if target_name:
+                conn_key = (source_name, target_name, 'INHERITS_FROM')
+                if conn_key not in seen:
+                    seen.add(conn_key)
+                    connections.append({
+                        "source": source_name,
+                        "target": target_name,
+                        "relationship": "INHERITS_FROM"
+                    })
+        
+        # CALLS -> calls_target
+        if result.get('calls_target') and isinstance(result['calls_target'], dict):
+            target = result['calls_target']
+            target_name = target.get('name')
+            if target_name:
+                conn_key = (source_name, target_name, 'CALLS')
+                if conn_key not in seen:
+                    seen.add(conn_key)
+                    connections.append({
+                        "source": source_name,
+                        "target": target_name,
+                        "relationship": "CALLS"
+                    })
+        
+        # DOCUMENTED_BY -> cd
+        if result.get('cd') and isinstance(result['cd'], dict):
+            target = result['cd']
+            target_name = target.get('name')
+            if target_name:
+                conn_key = (source_name, target_name, 'DOCUMENTED_BY')
+                if conn_key not in seen:
+                    seen.add(conn_key)
+                    connections.append({
+                        "source": source_name,
+                        "target": target_name,
+                        "relationship": "DOCUMENTED_BY"
+                    })
+        
+        # Additional relationships from other optional matches
+        # CONTAINS -> f, d (file/docstring)
+        for key in ['f', 'd']:
+            if result.get(key) and isinstance(result[key], dict):
+                target = result[key]
+                target_name = target.get('name')
+                if target_name:
+                    rel_type = "CONTAINS"
+                    conn_key = (source_name, target_name, rel_type)
+                    if conn_key not in seen:
+                        seen.add(conn_key)
+                        connections.append({
+                            "source": source_name,
+                            "target": target_name,
+                            "relationship": rel_type
+                        })
+    
+    logger.info(
+        "Connection extraction complete",
+        total_connections=len(connections),
+        sample_connections=str(connections[:3])
+    )
     
     return connections
-
 
 @router.post("/graph/generate-mermaid")
 async def generate_mermaid(
@@ -189,17 +254,32 @@ CREATE THIS DIAGRAM FOR {entity_name}:
         # FIX: Remove markdown, clean up
         mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
         
+        # 🔍 LOG THE ACTUAL MERMAID CODE
+        logger.info(
+            "Raw mermaid code from OpenAI",
+            mermaid_code=mermaid_code[:500],  # First 500 chars
+            entity=entity_name,
+            correlation_id=correlation_id,
+        )
+        
         # FIX: Validate it starts with graph
         # Validate and clean
         if not mermaid_code.startswith(("graph", "mindmap")):
             logger.warning("Generated diagram invalid - using fallback")
+            logger.warning(
+                "Invalid mermaid code detected",
+                first_chars=mermaid_code[:50],
+                correlation_id=correlation_id,
+            )
             mermaid_code = f"""mindmap
-                root(({entity_name}))
-                    Entity Type
-                    {entity_type}"""
+  root(({entity_name}))
+    Entity Type
+    {entity_type}"""
         
+        # 🔍 LOG FINAL MERMAID CODE
         logger.info(
             "Mermaid generated successfully",
+            final_mermaid_code=mermaid_code,
             entity=entity_name,
             connections=len(connections),
             correlation_id=correlation_id,

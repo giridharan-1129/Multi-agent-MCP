@@ -123,9 +123,19 @@ async def index_repository(request: IndexRequest, background_tasks: BackgroundTa
             repo_url=request.repo_url,
         )
 
-        # Validate repo URL
+        # Validate and sanitize repo URL
         if not request.repo_url.startswith(('http://', 'https://')):
             raise HTTPException(status_code=400, detail="repo_url must be a valid HTTP(S) URL")
+
+        # SANITIZE: Remove duplicate path segments
+        # e.g., https://github.com/tiangolo/fastapi/fastapi -> https://github.com/tiangolo/fastapi
+        repo_url = request.repo_url.rstrip('/')
+        parts = repo_url.split('/')
+        if len(parts) > 5 and parts[-1] == parts[-2]:  # Duplicate repo name
+            repo_url = '/'.join(parts[:-1])
+            logger.info(f"Sanitized duplicate path", original=request.repo_url, sanitized=repo_url)
+
+        request.repo_url = repo_url
 
         # Create job
         job_id = _create_job(request.repo_url, correlation_id)
