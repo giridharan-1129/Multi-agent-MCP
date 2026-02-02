@@ -221,7 +221,7 @@ class IndexRepositoryTool(MCPTool):
                         )
 
                     elif entity["type"] == "Method":
-                        # 1ï¸âƒ£ ALWAYS create the Method node first
+                        # 1 ALWAYS create the Method node first
                         await neo4j.create_method_node(
                             name=entity["name"],
                             module=entity["module"],
@@ -230,7 +230,7 @@ class IndexRepositoryTool(MCPTool):
                             is_async=entity.get("is_async", False),
                         )
 
-                        # 2ï¸âƒ£ File â†’ Method (DEFINES)
+                        # 2 File â†’ Method (DEFINES)
                         await neo4j.create_defines_relationship(
                             file_path=entity["module"],
                             target_name=entity["name"],
@@ -238,7 +238,7 @@ class IndexRepositoryTool(MCPTool):
                             target_type="Method",
                         )
 
-                        # 3ï¸âƒ£ Class â†’ Method (HAS_METHOD) â€” only if parent exists
+                        # 3 Class â†’ Method (HAS_METHOD) â€” only if parent exists
                         if entity.get("parent_class"):
                             await neo4j.create_relationship(
                                 source_name=entity["parent_class"],

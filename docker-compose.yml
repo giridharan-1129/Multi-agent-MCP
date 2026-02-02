@@ -35,6 +35,9 @@ services:
       - GATEWAY_HOST=0.0.0.0
       - GATEWAY_PORT=8000
       - GATEWAY_RELOAD=${GATEWAY_RELOAD:-false}
+      - PINECONE_API_KEY=${PINECONE_API_KEY}
+      - PINECONE_INDEX_NAME=${PINECONE_INDEX_NAME:-code-search}
+      - COHERE_API_KEY=${COHERE_API_KEY}
     depends_on:
       - neo4j
     volumes:
@@ -61,9 +64,11 @@ services:
     volumes:
       - ./streamlit_app.py:/app/streamlit_app.py
       - ./mermaid_renderer.py:/app/mermaid_renderer.py
+      - ./network_graph_renderer.py:/app/network_graph_renderer.py
       - ./relationship_mappings.py:/app/relationship_mappings.py
     environment:
       - PYTHONPATH=/app
+
 volumes:
   neo4j_data:
     driver: local

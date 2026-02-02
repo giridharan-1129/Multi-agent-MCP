@@ -17,7 +17,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
-    
+    "pinecone-client>=3.0.0",
+    "sentence-transformers>=2.2.2",
+    "cohere>=4.0.0",
     # FastAPI & Web
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",

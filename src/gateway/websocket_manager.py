@@ -38,25 +38,69 @@ class ConnectionManager:
         websocket = self.active_connections.get(session_id)
         if websocket:
             await websocket.send_json(data)
+            
     async def handle_query(self, websocket, query_text: str):
+        """
+        Handle WebSocket query with unified RAG (embeddings + graph).
+        Streams real-time results to client.
+        """
         session_id = str(uuid.uuid4())
 
         await websocket.send_json({
-            "type": "ack",
+            "type": "session_started",
             "session_id": session_id,
-            "message": query_text
+            "message": f"Processing: {query_text}"
         })
 
         try:
-            async for event in self.orchestrator.stream(query_text):
-                await websocket.send_json(event)
-
-        except Exception as e:
+            # Import RAG function
+            from ..routes.rag_chat import rag_chat
+            from ..routes.rag_chat import RAGChatRequest
+            
+            # Create RAG request
+            rag_request = RAGChatRequest(
+                query=query_text,
+                session_id=session_id,
+                retrieve_limit=5
+            )
+            
+            # Stream progress events
             await websocket.send_json({
-                "type": "error",
-                "message": str(e)
+                "type": "searching",
+                "status": "Searching embeddings and graph..."
+            })
+            
+            # Execute RAG handler
+            rag_response = await rag_chat(rag_request)
+            
+            # Send context found
+            await websocket.send_json({
+                "type": "context_found",
+                "embeddings_count": len([c for c in rag_response.retrieved_context if c.get('type') == 'code_chunk']),
+                "relationships_count": len([c for c in rag_response.retrieved_context if c.get('type') == 'relationship']),
+                "context": rag_response.retrieved_context
+            })
+            
+            # Send response
+            await websocket.send_json({
+                "type": "response",
+                "message": rag_response.response,
+                "agents_used": rag_response.agents_used,
+                "session_id": rag_response.session_id
+            })
+            
+            # Mark complete
+            await websocket.send_json({
+                "type": "complete",
+                "correlation_id": rag_response.correlation_id
             })
 
+        except Exception as e:
+            logger.exception("WebSocket query handling failed")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Query processing failed: {str(e)}"
+            })
 
 # Singleton instance
 ws_manager = ConnectionManager()

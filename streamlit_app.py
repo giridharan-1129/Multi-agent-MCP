@@ -8,13 +8,16 @@ import streamlit as st
 import streamlit.components.v1 as components
 import requests
 import time
-import json
 import os
+
 import re
+import sys
 
+sys.path.insert(0, '/mnt/project')
 
-from mermaid_renderer import render_mermaid_diagram, display_cypher_queries, display_query_results
+from mermaid_renderer import render_mermaid_diagram
 from relationship_mappings import get_cypher_query_templates, get_query_description
+from network_graph_renderer import render_network_graph, extract_nodes_and_edges
 
 # Configuration
 API_BASE = os.getenv("API_BASE", "http://gateway:8000")
@@ -22,8 +25,8 @@ REFRESH_INTERVAL = 3  # seconds
 
 # Page config
 st.set_page_config(
-    page_title="🧠 Agentic Codebase Chat",
-    page_icon="🧠",
+    page_title="Agentic Codebase Chat",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -99,7 +102,7 @@ if "last_repo_url" not in st.session_state:
 # ============================================================================
 # TABS
 # ============================================================================
-tab_chat, tab_graph, tab_tools = st.tabs(["💬 Chat", "📊 Knowledge Graph", "🛠️ Tools"])
+tab_chat, tab_graph, tab_tools = st.tabs(["Chat", "Knowledge Graph", "Tools"])
 
 # ============================================================================
 # TAB 1: CHAT
@@ -107,7 +110,7 @@ tab_chat, tab_graph, tab_tools = st.tabs(["💬 Chat", "📊 Knowledge Graph", "
 with tab_chat:
     # SIDEBAR
     with st.sidebar:
-        st.header("🔧 Repository Indexing")
+        st.header("Repository Indexing")
         
         repo_url = st.text_input(
             "GitHub Repository URL",
@@ -115,21 +118,21 @@ with tab_chat:
             key="repo_url_input"
         )
         
-        st.subheader("🎯 Actions")
+        st.subheader("Actions")
         
         col1, col2 = st.columns(2)
         with col1:
-            start_index = st.button("🚀 Start Indexing", use_container_width=True, key="start_btn")
+            start_index = st.button("Start Indexing", use_container_width=True, key="start_btn")
         with col2:
-            refresh_status = st.button("🔄 Refresh", use_container_width=True, key="refresh_btn")
+            refresh_status = st.button("Refresh", use_container_width=True, key="refresh_btn")
         
         st.divider()
         
-        # ✨ VECTOR EMBEDDINGS SECTION
-        st.subheader("✨ Vector Embeddings (Pinecone)")
+        # âœ¨ VECTOR EMBEDDINGS SECTION
+        st.subheader("Vector Embeddings (Pinecone)")
         
         embed_button = st.button(
-            "🧬 Embed Repository",
+            "Embed Repository",
             use_container_width=True,
             key="embed_btn",
             help="Create 650-line code chunks and generate embeddings for semantic search"
@@ -137,7 +140,7 @@ with tab_chat:
         
         if embed_button:
             if not repo_url:
-                st.error("⚠️ Please enter a repository URL first!")
+                st.error("Please enter a repository URL first!")
             else:
                 st.session_state.embedding_active = True
                 st.session_state.last_repo_url = repo_url
@@ -145,7 +148,7 @@ with tab_chat:
         
         # Show embedding progress if active
         if st.session_state.get("embedding_active", False):
-            st.markdown("### 🔄 Embedding Progress")
+            st.markdown("### Embedding Progress")
             
             progress_placeholder = st.empty()
             status_container = st.container()
@@ -156,7 +159,7 @@ with tab_chat:
                 
                 if embed_url:
                     with progress_placeholder:
-                        st.progress(25, text="🔄 Starting embedding process...")
+                        st.progress(25, text="Starting embedding process...")
                     
                     # Call embedding API
                     with status_container:
@@ -174,24 +177,23 @@ with tab_chat:
                         embed_data = embed_res.json()
                         
                         with progress_placeholder:
-                            st.progress(100, text="✅ Embedding Complete!")
+                            st.progress(100, text="Embedding Complete!")
                         
                         with status_container:
-                            st.success("✅ Embeddings Created Successfully!")
-                            
+                            st.success("Embeddings Created Successfully!")
+                          
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.metric(
-                                    "📦 Code Chunks",
+                                    "Code Chunks",
                                     embed_data.get('chunks_created', 0)
                                 )
                             with col2:
-                                stats = embed_data.get('stats', {})
                                 st.metric(
-                                    "🔢 Total Vectors",
-                                    stats.get('total_vectors', 0)
+                                    "Vectors Stored",
+                                    embed_data.get('vectors_upserted', embed_data.get('embeddings_generated', 0))
                                 )
-                            
+                        
                             st.info(f"""
                             **Embedding Details:**
                             - Repository: {embed_data.get('repo_id', 'unknown')}
@@ -206,21 +208,21 @@ with tab_chat:
                         
                     else:
                         with status_container:
-                            st.error(f"❌ Embedding failed: {embed_res.text}")
+                            st.error(f"Embedding failed: {embed_res.text}")
                         st.session_state.embedding_active = False
                         
             except requests.exceptions.Timeout:
                 with status_container:
-                    st.error("⏱️ Embedding timeout - large repository may take longer")
+                    st.error("Embedding timeout - large repository may take longer")
                 st.session_state.embedding_active = False
             except Exception as e:
                 with status_container:
-                    st.error(f"❌ Error: {str(e)}")
+                    st.error(f"Error: {str(e)}")
                 st.session_state.embedding_active = False
         
         # Show embedding status
         if st.session_state.get("embeddings_created", False):
-            st.success("✅ Embeddings Ready for Search!")
+            st.success("Embeddings Ready for Search!")
         
         if start_index and repo_url:
             st.session_state.indexing_active = True
@@ -242,7 +244,7 @@ with tab_chat:
                 st.session_state.indexing_active = False
                 st.error(f"Connection error: {str(e)}")
         
-        # 🎭 MODAL OVERLAY: Show if indexing active
+        # Ž­ MODAL OVERLAY: Show if indexing active
         if st.session_state.indexing_active and st.session_state.current_job_id:
             # CSS for modal overlay (subtle blur, no black overlay)
             st.markdown("""
@@ -325,7 +327,7 @@ with tab_chat:
                             st.markdown("""
                             <div class="modal-overlay">
                                 <div class="modal-box">
-                                    <div class="spinner">⚙️</div>
+                                    <div class="spinner"></div>
                                     <div class="modal-title">Indexing Repository</div>
                                     <div class="modal-message">Processing your codebase...</div>
                             """, unsafe_allow_html=True)
@@ -337,22 +339,22 @@ with tab_chat:
                             # Live metrics (3 columns)
                             col1, col2, col3 = st.columns(3)
                             with col1:
-                                st.metric("📁 Files", files)
+                                st.metric("Files", files)
                             with col2:
-                                st.metric("🎯 Entities", entities)
+                                st.metric("Entities", entities)
                             with col3:
-                                st.metric("🔗 Relations", relationships)
+                                st.metric("Relations", relationships)
                             
                             st.markdown("""
                                     <div class="modal-warning">
-                                        ⏱️ <strong>This may take 1-2 minutes</strong><br>
+                                         <strong>This may take 1-2 minutes</strong><br>
                                         Please keep this tab open and do not refresh
                                     </div>
                                 </div>
                             </div>
                             """, unsafe_allow_html=True)
                         
-                        # ✅ COMPLETED: Clear state and rerun
+                        #  COMPLETED: Clear state and rerun
                         if status == "completed":
                             st.session_state.indexing_active = False
                             st.session_state.current_job_id = None
@@ -360,14 +362,14 @@ with tab_chat:
                             time.sleep(1)
                             st.rerun()
                         
-                        # ❌ FAILED: Show error
+                        # âŒ FAILED: Show error
                         elif status == "failed":
                             st.session_state.indexing_active = False
-                            st.error(f"❌ Indexing failed: {job.get('error', 'Unknown error')}")
+                            st.error(f"Indexing failed: {job.get('error', 'Unknown error')}")
                             time.sleep(3)
                             st.rerun()
                         
-                        # ⏳ PENDING/RUNNING: Keep polling
+                        # â³ PENDING/RUNNING: Keep polling
                         time.sleep(1)
                         attempt += 1
                     else:
@@ -378,14 +380,14 @@ with tab_chat:
             
             # Timeout
             st.session_state.indexing_active = False
-            st.error("⏱️ Indexing timeout. Please refresh.")
+            st.error(" Indexing timeout. Please refresh.")
         
         if refresh_status:
             st.rerun()
         
         st.divider()
         
-        # ✅ Only show completed jobs summary (NOT active jobs)
+        #  Only show completed jobs summary (NOT active jobs)
         try:
             jobs_res = requests.get(f"{API_BASE}/api/index/jobs", timeout=10)
             if jobs_res.ok:
@@ -393,22 +395,22 @@ with tab_chat:
                 completed_jobs = [j for j in all_jobs if j.get("status") == "completed"]
                 
                 if completed_jobs:
-                    st.subheader("✅ Recently Indexed Repositories")
+                    st.subheader(" Recently Indexed Repositories")
                     for job in completed_jobs[-3:]:  # Show last 3
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
-                            st.metric("📦 Packages", job.get("files_processed", 0))
+                            st.metric("Packages", job.get("files_processed", 0))
                         with col2:
-                            st.metric("🎯 Entities", job.get("entities_created", 0))
+                            st.metric("Entities", job.get("entities_created", 0))
                         with col3:
-                            st.metric("🔗 Relations", job.get("relationships_created", 0))
+                            st.metric("Relations", job.get("relationships_created", 0))
                         with col4:
-                            st.metric("Status", "✅ Done")
+                            st.metric("Status", " Done")
         except:
             pass  # Silent: no completed jobs to show
         
         # DATABASE STATS with State Management (NO CACHE - updates in real-time)
-        st.subheader("📈 Database Stats")
+        st.subheader(" Database Stats")
         try:
             res = requests.get(f"{API_BASE}/api/index/status", timeout=10)
             if res.ok:
@@ -427,25 +429,25 @@ with tab_chat:
                 
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("📦 Packages", st.session_state.db_stats["Package"])
-                    st.metric("📁 Files", st.session_state.db_stats["File"])
+                    st.metric("Packages", st.session_state.db_stats["Package"])
+                    st.metric("Files", st.session_state.db_stats["File"])
                 with col2:
-                    st.metric("🏛️ Classes", st.session_state.db_stats["Class"])
-                    st.metric("⚙️ Functions", st.session_state.db_stats["Function"])
+                    st.metric("Classes", st.session_state.db_stats["Class"])
+                    st.metric("Functions", st.session_state.db_stats["Function"])
                 with col3:
-                    st.metric("🔧 Parameters", st.session_state.db_stats["Parameter"])
-                    st.metric("📝 Types", st.session_state.db_stats["Type"])
+                    st.metric("Parameters", st.session_state.db_stats["Parameter"])
+                    st.metric("Types", st.session_state.db_stats["Type"])
         except:
             st.warning("Could not fetch stats")
         
         st.divider()
         
         # DATABASE VERIFICATION
-        with st.expander("✅ Verify Database", expanded=False):
+        with st.expander(" Verify Database", expanded=False):
             col1, col2 = st.columns(2)
             
             with col1:
-                if st.button("🔍 Check DB Stats"):
+                if st.button("Check DB Stats"):
                     try:
                         response = requests.get(f"{API_BASE}/health", timeout=5)
                         if response.ok:
@@ -460,32 +462,17 @@ with tab_chat:
                             with node_col:
                                 st.write("**Nodes:**")
                                 for node_type, count in sorted(nodes.items()):
-                                    st.write(f"  • {node_type}: {count}")
+                                    st.write(f"  â€¢ {node_type}: {count}")
                             
                             with rel_col:
                                 st.write("**Relationships:**")
                                 for rel_type, count in sorted(rels.items()):
-                                    st.write(f"  • {rel_type}: {count}")
+                                    st.write(f"  â€¢ {rel_type}: {count}")
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
-            
-            with col2:
-                if st.button("📋 Show Cypher"):
-                    st.info("""
-**Copy to Neo4j Browser (http://localhost:7475):**
-```cypher
-MATCH (n) RETURN labels(n)[0] as Type, count(*) as Count ORDER BY Count DESC;
-
-MATCH ()-[r]->() RETURN type(r) as Type, count(*) as Count ORDER BY Count DESC;
-
-MATCH (p:Package)-[:CONTAINS]->(f:File) RETURN count(*) as CONTAINS_Count;
-
-MATCH (f:File)-[:DEFINES]->(e) RETURN count(*) as DEFINES_Count;
-```
-                    """)
     
     # MAIN CHAT AREA
-    st.title("💬 Agentic Codebase Chat")
+    st.title("Agentic Codebase Chat")
     
     st.markdown("### Conversation History")
     
@@ -500,7 +487,7 @@ MATCH (f:File)-[:DEFINES]->(e) RETURN count(*) as DEFINES_Count;
                     agents = msg.get("agents", [])
                     
                     if sources:
-                        with st.expander(f"📚 Sources ({len(sources)})"):
+                        with st.expander(f"“ Sources ({len(sources)})"):
                             for j, source in enumerate(sources, 1):
                                 st.markdown(f"""
 <div class="citation-box">
@@ -530,7 +517,7 @@ Module: {source.get('module', 'N/A')}
         
         try:
             with st.chat_message("assistant"):
-                with st.spinner("🔄 Processing..."):
+                with st.spinner("Processing..."):
                     res = requests.post(
                         f"{API_BASE}/api/rag-chat",
                         json=payload,
@@ -556,7 +543,7 @@ Module: {source.get('module', 'N/A')}
                     st.divider()
                     
                     if retrieved_context:
-                        with st.expander(f"📚 Sources ({len(retrieved_context)})"):
+                        with st.expander(f" Sources ({len(retrieved_context)})"):
                             for j, source in enumerate(retrieved_context, 1):
                                 st.markdown(f"""
 <div class="citation-box">
@@ -581,7 +568,7 @@ Name: <code>{source.get('name', 'N/A')}</code>
                     st.error(f"Error: {res.text}")
         
         except requests.exceptions.Timeout:
-            st.error("⏱️ Timeout")
+            st.error(" Timeout")
         except Exception as e:
             st.error(f"Error: {str(e)}")
 
@@ -590,9 +577,9 @@ Name: <code>{source.get('name', 'N/A')}</code>
 # TAB 2: KNOWLEDGE GRAPH
 # ============================================================================
 with tab_graph:
-    st.header("🕸️ Knowledge Graph Visualization")
+    st.header("Knowledge Graph Visualization")
     
-    st.subheader("🔍 Select Node Type → Specific Node")
+    st.subheader("Select Node Type at Specific Node")
     
     def get_all_entities():
         """Fetch all entities grouped by type - includes Functions, Methods, Parameters, etc."""
@@ -646,12 +633,12 @@ with tab_graph:
     if not entities_by_type:
         st.warning("No entities found. Index a repository first.")
     else:
-        # DUAL DROPDOWNS: Node Type → Specific Nodes with SEARCH
+        # DUAL DROPDOWNS: Node Type â†’ Specific Nodes with SEARCH
         col1, col2, col3 = st.columns([2, 2, 1])
         
         with col1:
             selected_type = st.selectbox(
-                "1️⃣ Node Type",
+                "1 Node Type",
                 options=["Select a type..."] + sorted(list(entities_by_type.keys())),
                 key="type_select"
             )
@@ -660,9 +647,9 @@ with tab_graph:
             if selected_type and selected_type != "Select a type...":
                 entity_list = entities_by_type.get(selected_type, [])
                 
-                # 🔍 Add search bar for filtering large lists
+                # ” Add search bar for filtering large lists
                 search_term = st.text_input(
-                    f"🔍 Search {selected_type}s ({len(entity_list)} available)",
+                    f"Search {selected_type}s ({len(entity_list)} available)",
                     placeholder="Type to filter...",
                     key="entity_search"
                 )
@@ -675,7 +662,7 @@ with tab_graph:
                 
                 if filtered_list:
                     entity_name = st.selectbox(
-                        f"2️⃣ Select {selected_type}",
+                        f"2 Select {selected_type}",
                         options=filtered_list,
                         key="entity_select"
                     )
@@ -684,7 +671,7 @@ with tab_graph:
                     entity_name = None
             else:
                 st.selectbox(
-                    "2️⃣ Select type first",
+                    "2 Select type first",
                     options=["No type selected"],
                     disabled=True,
                     key="entity_select_disabled"
@@ -692,30 +679,33 @@ with tab_graph:
                 entity_name = None
         
         with col3:
-            visualize_button = st.button("🔗 Visualize", use_container_width=True, disabled=(entity_name is None))
+            visualize_button = st.button("Visualize", use_container_width=True, disabled=(entity_name is None))
         
         if visualize_button and entity_name:
-            # 🤖 AI-POWERED VISUALIZATION PIPELINE WITH MULTIPLE CYPHER QUERIES
-            with st.spinner(f"🔄 Step 1: Generating optimized Cypher queries for {selected_type}..."):
+            # ¤– AI-POWERED VISUALIZATION PIPELINE WITH MULTIPLE CYPHER QUERIES
+            with st.spinner(f"Step 1: Generating optimized Cypher queries for {selected_type}..."):
                 try:
                     # STEP 1: Generate MULTIPLE Cypher queries based on node type and relationships
                     cypher_queries = get_cypher_query_templates(selected_type, entity_name)
                     
-                    st.info(f"✅ Generated {len(cypher_queries)} optimized Cypher queries")
-                    st.caption(f"ℹ️ {get_query_description(selected_type)}")
+                    st.info(f" Generated {len(cypher_queries)} optimized Cypher queries")
+                    st.caption(f" {get_query_description(selected_type)}")
                     
                 except Exception as e:
                     st.error(f"Step 1 failed: {str(e)}")
                     st.stop()
             
             # Display the generated queries in an expander
-            display_cypher_queries(cypher_queries, f"🔍 Generated Cypher Queries for {entity_name}")
+            # Display the generated queries in an expander
+            with st.expander(f"🔍 Generated Cypher Queries for {entity_name}", expanded=False):
+                for i, q in enumerate(cypher_queries, 1):
+                    st.code(q, language="cypher")
             
             # STEP 2: Execute ALL Cypher queries and collect results
             all_results = []
             query_status_list = []
             
-            with st.spinner(f"🔄 Step 2: Executing {len(cypher_queries)} queries on Neo4j..."):
+            with st.spinner(f"Step 2: Executing {len(cypher_queries)} queries on Neo4j..."):
                 try:
                     progress_bar = st.progress(0)
                     
@@ -736,19 +726,19 @@ with tab_graph:
                                 all_results.extend(results)
                                 query_status_list.append({
                                     "Query": idx,
-                                    "Status": "✅ Success",
+                                    "Status": " Success",
                                     "Results": len(results)
                                 })
                             else:
                                 query_status_list.append({
                                     "Query": idx,
-                                    "Status": "❌ Failed",
+                                    "Status": " Failed",
                                     "Results": 0
                                 })
                         except Exception as q_error:
                             query_status_list.append({
                                 "Query": idx,
-                                "Status": "⚠️ Error",
+                                "Status": " Error",
                                 "Results": 0
                             })
                         
@@ -758,19 +748,19 @@ with tab_graph:
                     progress_bar.empty()
                     
                     if not all_results:
-                        st.warning(f"⚠️ No relationships found for {entity_name}")
+                        st.warning(f"No relationships found for {entity_name}")
                         # Show query status for debugging
                         import pandas as pd
                         status_df = pd.DataFrame(query_status_list)
                         st.dataframe(status_df, use_container_width=True)
                         st.stop()
                     
-                    st.success(f"✅ All {len(cypher_queries)} queries executed - {len(all_results)} total results")
+                    st.success(f" All {len(cypher_queries)} queries executed - {len(all_results)} total results")
                     
                     # Show query status summary
                     import pandas as pd
                     status_df = pd.DataFrame(query_status_list)
-                    with st.expander("📋 Query Execution Status"):
+                    with st.expander(" Query Execution Status"):
                         st.dataframe(status_df, use_container_width=True)
                     
                 except Exception as e:
@@ -778,64 +768,53 @@ with tab_graph:
                     st.stop()
             
             # Display query results in a table
-            display_query_results(all_results, f"📊 All Query Results for {entity_name}")
+            # STEP 2.5: Display query results in a table
+            with st.expander(f"📊 All Query Results ({len(all_results)} results)", expanded=False):
+                import pandas as pd
+                if all_results:
+                    st.dataframe(pd.DataFrame(all_results), use_container_width=True)
+                else:
+                    st.warning("No results to display")
             
-            # STEP 3: Generate Mermaid diagram using OpenAI with all results
-            with st.spinner(f"🔄 Step 3: Generating Mermaid diagram from {len(all_results)} results..."):
+            
+            # STEP 3: Render interactive network graph
+            # STEP 3: RENDER USING MERMAID INSTEAD
+            st.divider()
+
+            with st.spinner(f"⏳ Step 3: Generating Mermaid diagram..."):
                 try:
-                    mermaid_gen_response = requests.post(
+                    # Call your existing mermaid endpoint
+                    mermaid_response = requests.post(
                         f"{API_BASE}/api/graph/generate-mermaid",
-                        params={"entity_name": entity_name, "entity_type": selected_type},
                         json={"query_results": all_results},
+                        params={"entity_name": entity_name, "entity_type": selected_type},
                         timeout=15
                     )
                     
-                    if not mermaid_gen_response.ok:
-                        st.error(f"Failed to generate Mermaid: {mermaid_gen_response.text}")
-                        st.stop()
-                    
-                    mermaid_data = mermaid_gen_response.json()
-                    mermaid_code = mermaid_data.get("mermaid_code", "")
-                    
-                    if not mermaid_code:
-                        st.error("No Mermaid code generated")
-                        st.stop()
-                    
-                    st.success(f"✅ Mermaid diagram generated successfully")
-                    
-                    # Show statistics
-                    stats = mermaid_data.get("stats", {})
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("📤 Outgoing Relationships", stats.get("outgoing_count", 0))
-                    with col2:
-                        st.metric("📥 Incoming Relationships", stats.get("incoming_count", 0))
-                    
-                    st.divider()
-                    
-                    # Render Mermaid diagram using the new render function
-                    render_mermaid_diagram(mermaid_code, height=600, diagram_title="📊 Relationship Graph")
-                    
-                    # Show generated code in expanders
-                    display_cypher_queries(cypher_queries, "👨‍💻 View Generated Cypher Queries")
-                    
-                    with st.expander("🎨 View Generated Mermaid Code"):
-                        st.code(mermaid_code, language="mermaid")
-                    
+                    if mermaid_response.ok:
+                        mermaid_data = mermaid_response.json()
+                        mermaid_code = mermaid_data.get("mermaid_code", "")
+                        
+                        if mermaid_code:
+                            st.success("✅ Diagram generated!")
+                            render_mermaid_diagram(mermaid_code, height=600, diagram_title=f"📊 {entity_name} Relationships")
+                        else:
+                            st.warning("No diagram generated")
+                    else:
+                        st.error(f"Mermaid generation failed: {mermaid_response.text}")
                 except Exception as e:
-                    st.error(f"Step 3 failed: {str(e)}")
-                    st.stop()
+                    st.error(f"❌ Failed: {str(e)}")
 
 # ============================================================================
 # TAB 3: TOOLS
 # ============================================================================
 with tab_tools:
-    st.title("🛠️ Tools & Utilities")
+    st.title("Tools & Utilities")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("🏥 System Health")
+        st.subheader("System Health")
         try:
             health_res = requests.get(f"{API_BASE}/health", timeout=5)
             if health_res.ok:
@@ -843,24 +822,24 @@ with tab_tools:
                 status = health_data.get("status", "unknown")
                 
                 if status == "healthy":
-                    st.success("✅ System Healthy")
+                    st.success(" System Healthy")
                 else:
-                    st.error("❌ System Unhealthy")
+                    st.error("System Unhealthy")
                 
                 components = health_data.get("components", {})
                 for comp_name, comp_data in components.items():
                     comp_status = comp_data.get("status", "unknown")
-                    icon = "✅" if comp_status == "healthy" else "❌"
+                    icon = "" if comp_status == "healthy" else "âŒ"
                     st.write(f"{icon} {comp_name.replace('_', ' ').title()}")
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
     with col2:
-        st.subheader("🗑️ Database Management")
-        st.warning("⚠️ This will delete ALL indexed data!")
+        st.subheader("Database Management")
+        st.warning("This will delete ALL indexed data!")
         
         if st.checkbox("I understand", key="confirm_clear"):
-            if st.button("🗑️ Clear Database"):
+            if st.button("Clear Database"):
                 try:
                     res = requests.post(
                         f"{API_BASE}/api/query/execute",
@@ -868,18 +847,18 @@ with tab_tools:
                         timeout=30
                     )
                     if res.ok:
-                        st.success("✅ Database cleared!")
+                        st.success(" Database cleared!")
                         st.balloons()
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
     
     st.divider()
     
-    st.subheader("ℹ️ API Info")
+    st.subheader("API Info")
     st.write(f"**Base URL:** `{API_BASE}`")
     st.write(f"**Session:** `{st.session_state.session_id or 'Not initialized'}`")
     
-    if st.button("📋 View Endpoints"):
+    if st.button("View Endpoints"):
         endpoints = {
             "/health": "Health check",
             "/agents": "List agents",

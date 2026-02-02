@@ -1,13 +1,11 @@
 """
-Chat endpoint.
+Chat endpoint - Now unified with RAG (uses both embeddings + graph).
 
-WHAT: POST /api/chat endpoint
-WHY: REST API for synchronous chat interactions
-HOW: Delegate fully to OrchestratorAgent
+DEPRECATED: Use /api/rag-chat instead for full context retrieval.
+This endpoint kept for backward compatibility.
 """
 
 from fastapi import APIRouter, HTTPException
-
 from ...shared.logger import (
     get_logger,
     generate_correlation_id,
@@ -23,85 +21,40 @@ router = APIRouter(tags=["chat"])
 @router.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Chat with the system.
-
-    The gateway is intentionally thin:
-    - Orchestrator owns sessions, routing, agents, synthesis
+    ⚠️ DEPRECATED: Use /api/rag-chat instead.
+    
+    This endpoint now delegates to RAG chat for consistency.
+    Retrieves context from BOTH embeddings and knowledge graph.
     """
     correlation_id = generate_correlation_id()
     set_correlation_id(correlation_id)
 
     logger.info(
-        "Chat request received",
+        "Chat request received (legacy endpoint)",
         query=request.query[:200],
         session_id=request.session_id,
     )
 
     try:
-        orchestrator = get_orchestrator()
-
-        final_response: str | None = None
-        session_id: str | None = None
-        agents_used: list[str] = []
-
-        # 🔁 Stream orchestration events
-        async for event in orchestrator.stream(request.query):
-            event_type = event.get("type")
-
-            if event_type == "analysis":
-                # optional: inspect routing later
-                pass
-
-            elif event_type == "context":
-                agent = event.get("agent")
-                if agent and agent not in agents_used:
-                    agents_used.append(agent)
-
-            elif event_type == "final":
-                if "error" in event:
-                    logger.warning(
-                        "Orchestrator reported recoverable failure",
-                        error=event["error"],
-                        correlation_id=correlation_id,
-                    )
-
-                    final_response = (
-                        "I couldn’t find a specific function or class to analyze. "
-                        "Try mentioning an actual function or class name from the repository."
-                    )
-                    session_id = event.get("session_id") or session_id
-                    continue
-
-                data = event.get("data")
-                if isinstance(data, dict):
-                    final_response = data.get("synthesis")
-                elif isinstance(data, str):
-                    final_response = data
-
-                session_id = event.get("session_id") or session_id
-
-
-        if not final_response:
-            logger.warning(
-                "Orchestrator returned no final response",
-                correlation_id=correlation_id,
-            )
-
-            return ChatResponse(
-                session_id=session_id or "generated-by-orchestrator",
-                response=(
-                    "I couldn’t find a specific function or class to analyze. "
-                    "Try mentioning an actual function or class name from the repository."
-                ),
-                agents_used=agents_used or ["orchestrator"],
-                correlation_id=correlation_id,
-            )
-
-
+        # Import RAG chat logic
+        from .rag_chat import rag_chat as rag_handler
+        from .rag_chat import RAGChatRequest
+        
+        # Convert to RAG request
+        rag_request = RAGChatRequest(
+            query=request.query,
+            session_id=request.session_id,
+            retrieve_limit=5
+        )
+        
+        # Call RAG handler
+        rag_response = await rag_handler(rag_request)
+        
+        # Convert RAG response to Chat response
         return ChatResponse(
-            session_id=session_id or "generated-by-orchestrator",
-            response=final_response,
-            agents_used=agents_used or ["orchestrator"],
+            session_id=rag_response.session_id,
+            response=rag_response.response,
+            agents_used=rag_response.agents_used,
             correlation_id=correlation_id,
         )
 

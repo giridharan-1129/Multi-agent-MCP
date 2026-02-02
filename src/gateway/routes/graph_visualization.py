@@ -1,14 +1,12 @@
 """
-Graph visualization endpoint using intelligent Cypher generation.
+Enhanced Graph visualization endpoint using intelligent Cypher generation.
 
-WHAT: Generate Mermaid diagrams using schema-aware Cypher queries
-WHY: Combine predefined query templates (reliable) with LLM for synthesis (flexible)
+WHAT: Generate Mermaid diagrams with actual relationship connections
+WHY: Show how entities relate, depend on, inherit from, or call each other
 HOW: 
-  1. Use relationship_mappings to generate queries based on node type
-  2. Execute all queries on Neo4j in parallel-like fashion
-  3. Collect and aggregate results
-  4. Use OpenAI to generate beautiful Mermaid code from results
-  5. Return Mermaid code to render
+  1. Extract relationships from Neo4j query results
+  2. Build visual graph structure
+  3. Use OpenAI to generate beautiful Mermaid diagrams with connections
 """
 
 import json
@@ -31,95 +29,79 @@ class GenerateMermaidRequest(BaseModel):
     query_results: List[Dict[str, Any]]
 
 
-@router.post("/graph/generate-cypher")
-async def generate_cypher(entity_name: str, entity_type: str):
+def _extract_all_entities(query_results: List[Dict]) -> Dict[str, List[str]]:
     """
-    Generate MULTIPLE optimized Cypher queries based on node type.
-    
-    Uses schema-aware templates instead of LLM to ensure reliability.
-    Returns a list of queries that explore different relationship patterns.
-    
-    Args:
-        entity_name: Name of entity (e.g., "FastAPI")
-        entity_type: Type of entity (e.g., "Class", "Function", "Package")
-    
-    Returns:
-        List of Cypher queries with description
+    Extract all unique entities from query results.
     """
-    correlation_id = generate_correlation_id()
-    set_correlation_id(correlation_id)
+    entities = {
+        "classes": set(),
+        "functions": set(),
+        "methods": set(),
+        "modules": set(),
+        "files": set()
+    }
     
-    try:
-        # Get queries based on node type - deterministic and reliable
-        cypher_queries = get_cypher_query_templates(entity_type, entity_name)
-        query_description = get_query_description(entity_type)
+    for result in query_results:
+        if not isinstance(result, dict):
+            continue
         
-        logger.info(
-            "Cypher queries generated from templates",
-            entity=entity_name,
-            type=entity_type,
-            query_count=len(cypher_queries),
-            correlation_id=correlation_id,
-        )
-        
-        return {
-            "success": True,
-            "queries": cypher_queries,
-            "description": query_description,
-            "query_count": len(cypher_queries),
-            "correlation_id": correlation_id,
-        }
-        
-    except Exception as e:
-        logger.error(f"Cypher generation failed: {str(e)}", correlation_id=correlation_id)
-        raise HTTPException(status_code=500, detail=str(e))
+        # Extract names and types from various result structures
+        for key, val in result.items():
+            # Only process string values
+            if not isinstance(val, str):
+                continue
+            if not val or val == "None":
+                continue
+                
+            if key in ['c', 'name', 'target', 'source']:
+                entities["classes"].add(val)
+            elif key == 'module':
+                entities["modules"].add(val)
+            elif 'function' in key.lower():
+                entities["functions"].add(val)
+            elif 'method' in key.lower():
+                entities["methods"].add(val)
+    
+    # Convert sets to sorted lists
+    return {k: sorted(list(v)) for k, v in entities.items()}
 
 
-@router.post("/graph/execute-cypher")
-async def execute_cypher(cypher: str = None, entity_name: str = None):
-    """
-    Execute Cypher query(ies) with automatic error recovery.
+def _build_relationship_connections(query_results: List[Dict]) -> List[Dict[str, Any]]:
+    connections = []
+    seen = set()
     
-    Supports both:
-    - Single query: ?cypher=<query> (deprecated)
-    - Multiple queries: POST with list (recommended)
+    for result in query_results:
+        if not isinstance(result, dict):
+            continue
+        
+        # Extract string values only
+        source = None
+        target = None
+        rel_type = "CONNECTS"
+        
+        for key, val in result.items():
+            if isinstance(val, str) and val and val != "None":
+                if not source:
+                    source = val
+                elif not target:
+                    target = val
+        
+        if result.get('relationship_type'):
+            rel_type = str(result.get('relationship_type'))
+        elif result.get('type'):
+            rel_type = str(result.get('type'))
+        
+        if source and target:
+            key = (source, target, rel_type)
+            if key not in seen:
+                seen.add(key)
+                connections.append({
+                    "source": source,
+                    "target": target,
+                    "relationship": rel_type
+                })
     
-    Args:
-        cypher: Single Cypher query string (optional)
-        entity_name: Entity name for parameter substitution
-    
-    Returns:
-        Query results
-    """
-    correlation_id = generate_correlation_id()
-    set_correlation_id(correlation_id)
-    
-    try:
-        neo4j = get_neo4j_service()
-        
-        if not cypher:
-            raise HTTPException(status_code=400, detail="cypher parameter required")
-        
-        # Execute query
-        results = await neo4j.execute_query(cypher, {"name": entity_name} if entity_name else {})
-        
-        logger.info(
-            "Cypher executed successfully",
-            entity=entity_name,
-            results_count=len(results),
-            correlation_id=correlation_id
-        )
-        
-        return {
-            "success": True,
-            "results": results,
-            "count": len(results),
-            "correlation_id": correlation_id,
-        }
-        
-    except Exception as e:
-        logger.error(f"Cypher execution failed: {str(e)}", correlation_id=correlation_id)
-        raise HTTPException(status_code=500, detail=str(e))
+    return connections
 
 
 @router.post("/graph/generate-mermaid")
@@ -131,13 +113,16 @@ async def generate_mermaid(
     """
     Generate Mermaid diagram code from query results.
     
-    Takes results from multiple queries (or a single query) and uses OpenAI
-    to generate a beautiful, readable Mermaid diagram.
+    This endpoint:
+    1. Extracts all entities and relationships from query results
+    2. Builds a connection map
+    3. Uses OpenAI to generate a beautiful, readable diagram
+    4. Handles edge cases (0 relationships, sparse data, etc.)
     
     Args:
-        entity_name: Entity name (query param)
-        entity_type: Entity type (query param)
-        request: Request body with query_results from /api/query/execute
+        entity_name: Primary entity name
+        entity_type: Primary entity type
+        request: Request body with query_results
     
     Returns:
         Mermaid diagram code with statistics
@@ -147,101 +132,76 @@ async def generate_mermaid(
     
     try:
         client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
-        # Extract results from request body
         query_results = request.query_results
         
-        # Flatten results in case they're nested
-        flattened_results = []
-        for result in query_results:
-            if isinstance(result, dict):
-                # Could be nested like {"results": {...}}
-                if "results" in result:
-                    flattened_results.append(result["results"])
-                else:
-                    flattened_results.append(result)
-            else:
-                flattened_results.append(result)
+        # Step 1: Extract entities and relationships
+        all_entities = _extract_all_entities(query_results)
+        connections = _build_relationship_connections(query_results)
         
-        # Extract relationships
-        outgoing = []
-        incoming = []
+        logger.info(
+            "Graph data extracted",
+            entity=entity_name,
+            entities_found=sum(len(v) for v in all_entities.values()),
+            connections=len(connections),
+            correlation_id=correlation_id
+        )
         
-        for item in flattened_results:
-            if isinstance(item, dict):
-                outgoing.extend(item.get("outgoing", []))
-                incoming.extend(item.get("incoming", []))
-        
-        # Filter out None/null values
-        outgoing = [r for r in outgoing if r and r.get("target")]
-        incoming = [r for r in incoming if r and r.get("source")]
-        
-        # Remove duplicates while preserving order
-        seen_out = set()
-        unique_outgoing = []
-        for r in outgoing:
-            key = (r.get("target"), r.get("relationship"))
-            if key not in seen_out:
-                seen_out.add(key)
-                unique_outgoing.append(r)
-        outgoing = unique_outgoing[:10]  # Limit for readability
-        
-        seen_in = set()
-        unique_incoming = []
-        for r in incoming:
-            key = (r.get("source"), r.get("relationship"))
-            if key not in seen_in:
-                seen_in.add(key)
-                unique_incoming.append(r)
-        incoming = unique_incoming[:10]  # Limit for readability
-        
-        prompt = f"""Generate a beautiful Mermaid diagram for code entity relationships.
+        # Step 2: Build prompt for diagram generation
+        prompt = f"""Generate a Mermaid mindmap diagram. Return ONLY the code, nothing else.
 
-Entity: {entity_name} (Type: {entity_type})
+ENTITY: {entity_name} ({entity_type})
 
-OUTGOING RELATIONSHIPS (what this entity uses/depends on):
-{json.dumps(outgoing, indent=2)}
+CONNECTIONS: {len(connections)}
+{json.dumps(connections[:8], indent=2) if connections else 'NONE'}
 
-INCOMING RELATIONSHIPS (what depends on this entity):
-{json.dumps(incoming, indent=2)}
+OUTPUT FORMAT:
+- Start with: mindmap
+- Central node: root((EntityName))
+- Child nodes: use relationship names as labels
+- NO markdown backticks
+- NO explanations
+- Simple text only
 
-MERMAID REQUIREMENTS:
-1. Use graph LR (left to right layout)
-2. Central node: large, distinctive (use bright color like #FF6B6B)
-3. Outgoing dependencies: blue (#4ECDC4)
-4. Incoming dependents: orange (#FFE66D)
-5. Edge labels: show relationship type (CALLS, INHERITS_FROM, etc.)
-6. Limit nodes for readability (max 8-10 each direction)
-7. Use short, clear node IDs (c1, f1, p1, etc.)
-8. Proper Mermaid syntax: graph LR, A["label"], A -->|rel| B
-9. Add styling with classDef
-10. ONLY output valid Mermaid code - NO markdown, NO explanation
+EXAMPLE:
+mindmap
+  root((Encoding))
+    inherits from
+      BaseException
+    used by
+      Request Handler
+    methods
+      encode
+      decode
 
-Start with: graph LR
-End with: classDef statements for styling"""
+CREATE THIS DIAGRAM FOR {entity_name}:
+"""
 
+        # Step 3: Call OpenAI
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=1500,
+            temperature=0.3,
+            max_tokens=2000,
         )
         
         mermaid_code = response.choices[0].message.content.strip()
         
-        # Clean markdown if present
-        if mermaid_code.startswith("```"):
-            mermaid_code = mermaid_code.split("```")[1]
-            if mermaid_code.startswith("mermaid"):
-                mermaid_code = mermaid_code[7:]
-            mermaid_code = mermaid_code.strip()
+        # FIX: Remove markdown, clean up
+        mermaid_code = mermaid_code.replace("```mermaid", "").replace("```", "").strip()
+        
+        # FIX: Validate it starts with graph
+        # Validate and clean
+        if not mermaid_code.startswith(("graph", "mindmap")):
+            logger.warning("Generated diagram invalid - using fallback")
+            mermaid_code = f"""mindmap
+                root(({entity_name}))
+                    Entity Type
+                    {entity_type}"""
         
         logger.info(
             "Mermaid generated successfully",
             entity=entity_name,
-            entity_type=entity_type,
-            outgoing_count=len(outgoing),
-            incoming_count=len(incoming),
+            connections=len(connections),
             correlation_id=correlation_id,
         )
         
@@ -249,9 +209,9 @@ End with: classDef statements for styling"""
             "success": True,
             "mermaid_code": mermaid_code,
             "stats": {
-                "outgoing_count": len(outgoing),
-                "incoming_count": len(incoming),
-                "total_relationships": len(outgoing) + len(incoming),
+                "total_entities_in_db": sum(len(v) for v in all_entities.values()),
+                "direct_connections": len(connections),
+                "entity_type": entity_type,
             },
             "correlation_id": correlation_id,
         }
