@@ -13,7 +13,8 @@ from .indexing import router as indexing_router
 from .query import router as query_router
 from .analysis import router as analysis_router
 from .rag_chat import router as rag_chat_router
-
+from .graph_visualization import router as graph_visualization_router
+from .embeddings import router as embeddings_router
 __all__ = [
     "health_router",
     "chat_router",
@@ -22,4 +23,6 @@ __all__ = [
     "query_router",
     "analysis_router",
     "rag_chat_router",
+    "graph_visualization_router",
+    "embeddings_router",
 ]

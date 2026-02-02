@@ -189,7 +189,15 @@ class IndexRepositoryTool(MCPTool):
             logger.info("Storing entities in Neo4j", count=len(all_entities))
             for entity in all_entities:
                 try:
-                    if entity["type"] == "Class":
+                    if entity["type"] == "Parameter":
+                        await neo4j.create_parameter_node(
+                            name=entity["name"],
+                            param_name=entity.get("param_name", entity["name"]),
+                            module=entity.get("module", ""),
+                        )
+                    elif entity["type"] == "Type":
+                        await neo4j.create_type_node(entity["name"])
+                    elif entity["type"] == "Class":
                         await neo4j.create_class_node(
                             name=entity["name"],
                             module=entity.get("module", ""),
@@ -213,7 +221,7 @@ class IndexRepositoryTool(MCPTool):
                         )
 
                     elif entity["type"] == "Method":
-                        # 1️⃣ ALWAYS create the Method node first
+                        # 1ï¸âƒ£ ALWAYS create the Method node first
                         await neo4j.create_method_node(
                             name=entity["name"],
                             module=entity["module"],
@@ -222,7 +230,7 @@ class IndexRepositoryTool(MCPTool):
                             is_async=entity.get("is_async", False),
                         )
 
-                        # 2️⃣ File → Method (DEFINES)
+                        # 2ï¸âƒ£ File â†’ Method (DEFINES)
                         await neo4j.create_defines_relationship(
                             file_path=entity["module"],
                             target_name=entity["name"],
@@ -230,7 +238,7 @@ class IndexRepositoryTool(MCPTool):
                             target_type="Method",
                         )
 
-                        # 3️⃣ Class → Method (HAS_METHOD) — only if parent exists
+                        # 3ï¸âƒ£ Class â†’ Method (HAS_METHOD) â€” only if parent exists
                         if entity.get("parent_class"):
                             await neo4j.create_relationship(
                                 source_name=entity["parent_class"],
@@ -278,127 +286,66 @@ class IndexRepositoryTool(MCPTool):
 
 
                 except Exception as e:
-                    logger.error("Error storing entity", entity=entity["name"], error=str(e))
-                # Build entity lookup for module resolution
-               
+                    logger.debug("Skipping entity", entity=entity.get("name"), error=str(e))
+                    continue
+
 
             # Store relationships
             logger.info("Storing relationships in Neo4j", count=len(all_relationships))
+            
+            # Build entity type index for accurate label detection
+            entity_type_index = {}
+            for entity in all_entities:
+                entity_type_index[(entity.get("name"), entity.get("type"))] = entity
+            
             for rel in all_relationships:
-                if rel["type"] == "IMPORTS":
-                    await neo4j.create_package_node(rel["source"])
-                    await neo4j.create_package_node(rel["target"])
-
                 try:
-                    source_module = rel.get("source_module")
-                    target_module = rel.get("target_module")
-
-                    # Resolve target module if missing
-                    if target_module is None:
-                        target_module = entity_lookup.get(
-                            (rel["target"], "Class")
-                            
-                        ) or entity_lookup.get(
-                            (rel["target"], "Function")
+                    if rel["type"] == "IMPORTS":
+                        await neo4j.create_relationship(
+                            source_name=rel["source"],
+                            source_label="Package",
+                            target_name=rel["target"],
+                            target_label="Package",
+                            rel_type="IMPORTS",
                         )
-
-                    # Skip unresolved modules EXCEPT for CONTAINS and IMPORTS
-                    if rel["type"] not in {"CONTAINS", "IMPORTS"} and (not source_module or not target_module):
-                        continue
-
-
-
-                    LABEL_MAP = {
-                            "IMPORTS": ("Package", "Package"),
-                            "DEFINES": ("File", None),
-                            "CALLS": ("Function", "Function"),
-                            "INHERITS_FROM": ("Class", "Class"),
-                            "DECORATED_BY": ("Function", "Function"),
-                            "HAS_METHOD": ("Class", "Method"),
-                            "HAS_PARAM": ("Function", "Parameter"),
-                            "RETURNS": ("Function", "Type"),
-
-                        }
-                    # Special handling for CONTAINS (overloaded relationship)
-                    if rel["type"] == "CONTAINS":
-                        # Class -> Function
-                        if rel["source"] in [e["name"] for e in all_entities if e["type"] == "Class"]:
-                            source_label = "Class"
-                            target_label = "Function"
-                        # Package -> File
-                        else:
-                            source_label = "Package"
-                            target_label = "File"
-
-                    elif rel["type"] == "DOCUMENTED_BY":
-                        fn = await neo4j.find_entity(rel["source"], "Function")
-                        mt = await neo4j.find_entity(rel["source"], "Method")
-                        cl = await neo4j.find_entity(rel["source"], "Class")
-
-                        if fn.get("entity"):
-                            source_label = "Function"
-                        elif mt.get("entity"):
-                            source_label = "Method"
-                        elif cl.get("entity"):
-                            source_label = "Class"
-                        else:
-                            continue
-
-
-                        target_label = "Docstring"
-
-                    elif rel["type"] == "CALLS" and target_label == "Method":
-                        if not await neo4j.find_entity(rel["target"], "Method"):
-                            continue
-
-
-                    else:
-                        if rel["type"] in {"HAS_PARAM", "RETURNS"}:
-                            # Function OR Method
-                            if (await neo4j.find_entity(rel["source"], "Method")).get("entity"):
-                                source_label = "Method"
-                            else:
-                                source_label = "Function"
-
-                            target_label = LABEL_MAP[rel["type"]][1]
-
-                        else:
-                            source_label, target_label = LABEL_MAP.get(rel["type"], (None, None))
-
-
-                    if not source_label or not target_label:
-                        continue
-
-                    # Only create relationship if both nodes exist in the database
-                    # This ensures determinism: only successful relationships are created
-                    # Skip existence check for IMPORTS (packages are guaranteed to exist)
-                    if rel["type"] != "IMPORTS":
-                        source_exists = await neo4j.find_entity(rel["source"], source_label)
-                        target_exists = await neo4j.find_entity(rel["target"], target_label)
-
-                        if not source_exists or not target_exists:
-                            logger.debug(
-                                "Skipping relationship - node missing",
-                                source=rel["source"],
-                                target=rel["target"],
-                                rel_type=rel["type"],
-                            )
-                            continue
-
-
-                    await neo4j.create_relationship(
-                        source_name=rel["source"],
-                        source_label=source_label,
-                        target_name=rel["target"],
-                        target_label=target_label,
-                        rel_type=rel["type"],
-                        properties={"line_number": rel.get("line_number")},
-                    )
-
-
+                    elif rel["type"] == "INHERITS_FROM":
+                        await neo4j.create_relationship(
+                            source_name=rel["source"],
+                            source_label="Class",
+                            target_name=rel["target"],
+                            target_label="Class",
+                            rel_type="INHERITS_FROM",
+                        )
+                    elif rel["type"] == "CALLS":
+                        # Smart detection: check if source is Function or Method
+                        source_is_func = (rel["source"], "Function") in entity_type_index
+                        source_label = "Function" if source_is_func else "Method"
+                        
+                        target_is_func = (rel["target"], "Function") in entity_type_index
+                        target_label = "Function" if target_is_func else "Method"
+                        
+                        await neo4j.create_relationship(
+                            source_name=rel["source"],
+                            source_label=source_label,
+                            target_name=rel["target"],
+                            target_label=target_label,
+                            rel_type="CALLS",
+                        )
+                    elif rel["type"] == "DECORATED_BY":
+                        # Decorator source detection
+                        source_is_func = (rel["source"], "Function") in entity_type_index
+                        source_label = "Function" if source_is_func else "Method"
+                        
+                        await neo4j.create_relationship(
+                            source_name=rel["source"],
+                            source_label=source_label,
+                            target_name=rel["target"],
+                            target_label="Function",
+                            rel_type="DECORATED_BY",
+                        )
                 except Exception as e:
-                    logger.warning("Failed to store relationship", rel=rel, error=str(e))
-
+                    logger.debug("Skipping relationship", rel_type=rel.get("type"), error=str(e))
+                    continue
 
             # Get final statistics
             stats = await neo4j.get_graph_statistics()

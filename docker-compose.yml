@@ -58,6 +58,12 @@ services:
       - gateway
     networks:
       - multiagent
+    volumes:
+      - ./streamlit_app.py:/app/streamlit_app.py
+      - ./mermaid_renderer.py:/app/mermaid_renderer.py
+      - ./relationship_mappings.py:/app/relationship_mappings.py
+    environment:
+      - PYTHONPATH=/app
 volumes:
   neo4j_data:
     driver: local

@@ -404,8 +404,8 @@ class GetRelationshipsTool(MCPTool):
         except Exception as e:
             logger.error(
                 "Failed to get relationships",
-                source=source,
-                target=target,
+                entity=name,
+                relationship=relationship,
                 error=str(e),
             )
             return ToolResult(

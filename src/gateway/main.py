@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
 from ..shared.config import config
 from ..shared.logger import get_logger, generate_correlation_id, set_correlation_id
 from ..shared.neo4j_service import init_neo4j_service, get_neo4j_service
@@ -27,6 +26,8 @@ from .routes import (
     indexing_router,
     query_router,
     analysis_router,
+    embeddings_router,
+    graph_visualization_router,
 )
 
 logger = get_logger(__name__)
@@ -153,7 +154,8 @@ app.include_router(indexing_router)
 app.include_router(query_router)
 app.include_router(analysis_router)
 app.include_router(rag_chat_router)
-
+app.include_router(graph_visualization_router)
+app.include_router(embeddings_router)
 
 if __name__ == "__main__":
     import uvicorn

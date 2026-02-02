@@ -163,7 +163,7 @@ class Neo4jService:
                 MERGE (p:Parameter {name: $name})
                 SET p.param_name = $param_name,
                     p.module = $module
-                """, locals())
+                """, {"name": name, "param_name": param_name, "module": module})
         await run_in_threadpool(_run)
 
     async def create_type_node(self, name):
@@ -224,24 +224,27 @@ class Neo4jService:
         properties: Dict = None,
     ):
         def _run():
-            with self.driver.session(database=self.database) as session:
-                # Build match clauses - File nodes match on 'path', others on 'name'
-                source_prop = 'path' if source_label == 'File' else 'name'
-                target_prop = 'path' if target_label == 'File' else 'name'
+            try:
+                with self.driver.session(database=self.database) as session:
+                    # Build match clauses - File nodes match on 'path', others on 'name'
+                    source_prop = 'path' if source_label == 'File' else 'name'
+                    target_prop = 'path' if target_label == 'File' else 'name'
 
-                session.run(
-                    f"""
-                    MATCH (a:{source_label} {{{source_prop}: $source}})
-                    MATCH (b:{target_label} {{{target_prop}: $target}})
-                    MERGE (a)-[r:{rel_type}]->(b)
-                    SET r += $props
-                    """,
-                    {
-                        "source": source_name,
-                        "target": target_name,
-                        "props": properties or {},
-                    },
-                )
+                    session.run(
+                        f"""
+                        MATCH (a:{source_label} {{{source_prop}: $source}})
+                        MATCH (b:{target_label} {{{target_prop}: $target}})
+                        MERGE (a)-[r:{rel_type}]->(b)
+                        SET r += $props
+                        """,
+                        {
+                            "source": source_name,
+                            "target": target_name,
+                            "props": properties or {},
+                        },
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to create {rel_type} relationship: {str(e)}")
 
         await run_in_threadpool(_run)
 
@@ -255,19 +258,22 @@ class Neo4jService:
         target_type: str,
     ):
         def _run():
-            with self.driver.session(database=self.database) as session:
-                session.run(
-                    f"""
-                    MATCH (f:File {{path: $file}})
-                    MATCH (t:{target_type} {{name: $name, module: $module}})
-                    MERGE (f)-[:DEFINES]->(t)
-                    """,
-                    {
-                        "file": file_path,
-                        "name": target_name,
-                        "module": target_module,
-                    },
-                )
+            try:
+                with self.driver.session(database=self.database) as session:
+                    session.run(
+                        f"""
+                        MATCH (f:File {{path: $file}})
+                        MATCH (t:{target_type} {{name: $name, module: $module}})
+                        MERGE (f)-[:DEFINES]->(t)
+                        """,
+                        {
+                            "file": file_path,
+                            "name": target_name,
+                            "module": target_module,
+                        },
+                    )
+            except Exception as e:
+                logger.debug(f"Failed to create DEFINES relationship for {target_name}: {str(e)}")
 
         await run_in_threadpool(_run)
 
@@ -297,7 +303,7 @@ class Neo4jService:
 
             def _run():
                 with self.driver.session(database=self.database) as session:
-                    # 1ï¸âƒ£ Exact match (case-insensitive)
+                    # 1Ã¯Â¸ÂÃ¢Æ’Â£ Exact match (case-insensitive)
                     query_exact = f"""
                     MATCH (n{':' + label if label else ''})
                     WHERE toLower(n.name) = toLower($name)
@@ -310,7 +316,7 @@ class Neo4jService:
                     if record:
                         return record["n"]
 
-                    # 2ï¸âƒ£ Fallback: contains
+                    # 2Ã¯Â¸ÂÃ¢Æ’Â£ Fallback: contains
                     query_contains = f"""
                     MATCH (n{':' + label if label else ''})
                     WHERE toLower(n.name) CONTAINS toLower($name)
@@ -481,7 +487,7 @@ class Neo4jService:
                     result = session.run(cypher, {"name": entity_name})
                     return [r["relationship"] for r in result]
 
-                # === DEFINES (File → Class/Function ONLY) ===
+                # === DEFINES (File â†’ Class/Function ONLY) ===
                 if relationship_type == "DEFINES":
                     cypher = """
                     MATCH (f:File {path: $name})-[:DEFINES]->(e)
@@ -577,4 +583,3 @@ def get_neo4j_service() -> Neo4jService:
     if _neo4j_service is None:
         raise RuntimeError("Neo4jService not initialized. Call init_neo4j_service() first.")
     return _neo4j_service
-   

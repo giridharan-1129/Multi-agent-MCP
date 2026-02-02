@@ -16,15 +16,13 @@ from ..dependencies import get_graph_query
 logger = get_logger(__name__)
 router = APIRouter(tags=["query"], prefix="/api/query")
 
-
 @router.post("/find")
-async def find_entity(name: str, entity_type: Optional[str] = None):
+async def find_entity(payload: dict):
     """
     Find an entity in the knowledge graph.
 
     Args:
-        name: Entity name
-        entity_type: Optional type filter (Class, Function, Module)
+        payload: {"name": "EntityName", "entity_type": "Class"} (optional)
 
     Returns:
         Entity data if found
@@ -33,6 +31,12 @@ async def find_entity(name: str, entity_type: Optional[str] = None):
     set_correlation_id(correlation_id)
 
     try:
+        name = payload.get("name")
+        entity_type = payload.get("entity_type")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
         graph_query = get_graph_query()
 
         result = await graph_query.execute_tool(
@@ -57,7 +61,6 @@ async def find_entity(name: str, entity_type: Optional[str] = None):
     except Exception as e:
         logger.error("Failed to find entity", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @router.post("/execute")
 async def execute_query(payload: dict):
@@ -96,12 +99,12 @@ async def execute_query(payload: dict):
 
 
 @router.post("/dependencies")
-async def get_dependencies(name: str):
+async def get_dependencies(payload: dict):
     """
     Get dependencies of an entity.
 
     Args:
-        name: Entity name
+        payload: {"name": "EntityName"}
 
     Returns:
         List of dependencies
@@ -110,6 +113,11 @@ async def get_dependencies(name: str):
     set_correlation_id(correlation_id)
 
     try:
+        name = payload.get("name")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
         graph_query = get_graph_query()
 
         result = await graph_query.execute_tool(
@@ -134,14 +142,13 @@ async def get_dependencies(name: str):
         logger.error("Failed to get dependencies", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/dependents")
-async def get_dependents(name: str):
+async def get_dependents(payload: dict):
     """
     Get entities that depend on this entity.
 
     Args:
-        name: Entity name
+        payload: {"name": "EntityName"}
 
     Returns:
         List of dependents
@@ -150,6 +157,11 @@ async def get_dependents(name: str):
     set_correlation_id(correlation_id)
 
     try:
+        name = payload.get("name")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
         graph_query = get_graph_query()
 
         result = await graph_query.execute_tool(
@@ -174,15 +186,13 @@ async def get_dependents(name: str):
         logger.error("Failed to get dependents", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.post("/related")
-async def get_related(name: str, relationship: Optional[str] = None):
+async def get_related(payload: dict):
     """
     Get entities related by a specific relationship type.
 
     Args:
-        name: Entity name
-        relationship: Relationship type filter
+        payload: {"name": "EntityName", "relationship": "CALLS"} (optional)
 
     Returns:
         Related entities
@@ -191,6 +201,12 @@ async def get_related(name: str, relationship: Optional[str] = None):
     set_correlation_id(correlation_id)
 
     try:
+        name = payload.get("name")
+        relationship = payload.get("relationship")
+        
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+        
         graph_query = get_graph_query()
 
         result = await graph_query.execute_tool(
@@ -200,7 +216,6 @@ async def get_related(name: str, relationship: Optional[str] = None):
                     "relationship": relationship,
                 },
             )
-
 
         if not result.success:
             raise HTTPException(status_code=400, detail=result.error)
@@ -212,7 +227,6 @@ async def get_related(name: str, relationship: Optional[str] = None):
             "count": result.data.get("count", 0),
             "correlation_id": correlation_id,
         }
-
 
     except HTTPException:
         raise
