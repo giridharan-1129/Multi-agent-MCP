@@ -35,12 +35,12 @@ ENV PATH=/root/.local/bin:$PATH
 COPY src/ src/
 COPY .env.example .env.example
 
-# Expose port (for debugging)
+# Expose port
 EXPOSE 8004
 
-# Health check (simple TCP check)
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import socket; socket.create_connection(('localhost', 8004), timeout=2)" || exit 1
+    CMD curl -f http://localhost:8004/health || exit 1
 
-# Run code analyst agent
-CMD ["python3", "-m", "src.agents.code_analyst_agent"]
+# Run code analyst service
+CMD ["uvicorn", "src.services.code_analyst_service.main:app", "--host", "0.0.0.0", "--port", "8004"]

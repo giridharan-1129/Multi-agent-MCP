@@ -1,172 +1,189 @@
 version: '3.8'
 
 services:
-  # Databases
+  # ============================================================================
+  # DATABASES
+  # ============================================================================
+  
   neo4j:
-    image: neo4j:5.14-community
-    container_name: multiagent-neo4j
+    image: neo4j:5.15
+    container_name: neo4j
     ports:
-      - "7688:7687"
-      - "7475:7474"
+      - "7687:7687"
+      - "7474:7474"
     environment:
-      - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc"]'
     volumes:
-      - neo4j_data:/var/lib/neo4j/data
-      - neo4j_logs:/var/lib/neo4j/logs
-    networks:
-      - multiagent
+      - neo4j_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7474"]
+      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - codebase_chat
 
   redis:
     image: redis:7-alpine
-    container_name: multiagent-redis
+    container_name: redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
+    command: redis-server --appendonly yes --requirepass redis_password
     volumes:
       - redis_data:/data
-    networks:
-      - multiagent
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_password}", "ping"]
+      test: ["CMD", "redis-cli", "-a", "redis_password", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - codebase_chat
 
   postgres:
     image: postgres:15-alpine
-    container_name: multiagent-postgres
+    container_name: postgres
     ports:
       - "5432:5432"
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_password}
-      POSTGRES_DB: ${POSTGRES_DB:-codebase_chat}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: codebase_chat
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - multiagent
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - codebase_chat
 
-  # MCP Services
+  # ============================================================================
+  # MCP SERVICES
+  # ============================================================================
+
   memory_service:
     build:
       context: .
-      dockerfile: services/memory_service/Dockerfile
-    container_name: multiagent-memory
+      dockerfile: src/services/memory_service/Dockerfile
+    container_name: memory_service
     ports:
       - "8005:8005"
     environment:
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres_password}@postgres:5432/${POSTGRES_DB:-codebase_chat}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - SERVICE_PORT=8005
+      REDIS_URL: redis://:redis_password@redis:6379/0
+      DATABASE_URL: postgresql://postgres:postgres_password@postgres:5432/codebase_chat
+      LOG_LEVEL: INFO
+      MEMORY_HOST: 0.0.0.0
+      MEMORY_PORT: 8005
     depends_on:
       redis:
         condition: service_healthy
       postgres:
         condition: service_healthy
-    networks:
-      - multiagent
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - codebase_chat
 
   graph_query_service:
     build:
       context: .
-      dockerfile: services/graph_query_service/Dockerfile
-    container_name: multiagent-graph-query
+      dockerfile: src/services/graph_query_service/Dockerfile
+    container_name: graph_query_service
     ports:
       - "8003:8003"
     environment:
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USERNAME=${NEO4J_USERNAME}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
-      - NEO4J_DATABASE=${NEO4J_DATABASE}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - SERVICE_PORT=8003
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      LOG_LEVEL: INFO
+      GRAPH_QUERY_HOST: 0.0.0.0
+      GRAPH_QUERY_PORT: 8003
     depends_on:
       neo4j:
         condition: service_healthy
-    networks:
-      - multiagent
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - codebase_chat
 
   code_analyst_service:
     build:
       context: .
-      dockerfile: services/code_analyst_service/Dockerfile
-    container_name: multiagent-code-analyst
+      dockerfile: src/services/code_analyst_service/Dockerfile
+    container_name: code_analyst_service
     ports:
       - "8004:8004"
     environment:
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - SERVICE_PORT=8004
-    networks:
-      - multiagent
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      LOG_LEVEL: INFO
+      CODE_ANALYST_HOST: 0.0.0.0
+      CODE_ANALYST_PORT: 8004
+    depends_on:
+      neo4j:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - codebase_chat
 
   indexer_service:
     build:
       context: .
-      dockerfile: services/indexer_service/Dockerfile
-    container_name: multiagent-indexer
+      dockerfile: src/services/indexer_service/Dockerfile
+    container_name: indexer_service
     ports:
       - "8002:8002"
     environment:
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USERNAME=${NEO4J_USERNAME}
-      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
-      - NEO4J_DATABASE=${NEO4J_DATABASE}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - SERVICE_PORT=8002
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: password
+      LOG_LEVEL: INFO
+      INDEXER_HOST: 0.0.0.0
+      INDEXER_PORT: 8002
     depends_on:
       neo4j:
         condition: service_healthy
     volumes:
       - /tmp/repositories:/tmp/repositories
-    networks:
-      - multiagent
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - codebase_chat
 
   orchestrator_service:
     build:
       context: .
-      dockerfile: services/orchestrator_service/Dockerfile
-    container_name: multiagent-orchestrator
+      dockerfile: src/services/orchestrator_service/Dockerfile
+    container_name: orchestrator_service
     ports:
       - "8001:8001"
     environment:
-      - MEMORY_SERVICE_URL=http://memory_service:8005
-      - GRAPH_QUERY_SERVICE_URL=http://graph_query_service:8003
-      - CODE_ANALYST_SERVICE_URL=http://code_analyst_service:8004
-      - INDEXER_SERVICE_URL=http://indexer_service:8002
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - SERVICE_PORT=8001
+      MEMORY_SERVICE_URL: http://memory_service:8005
+      GRAPH_QUERY_SERVICE_URL: http://graph_query_service:8003
+      CODE_ANALYST_SERVICE_URL: http://code_analyst_service:8004
+      INDEXER_SERVICE_URL: http://indexer_service:8002
+      REDIS_URL: redis://:redis_password@redis:6379/1
+      DATABASE_URL: postgresql://postgres:postgres_password@postgres:5432/codebase_chat
+      LOG_LEVEL: INFO
+      ORCHESTRATOR_HOST: 0.0.0.0
+      ORCHESTRATOR_PORT: 8001
     depends_on:
       memory_service:
         condition: service_healthy
@@ -176,71 +193,69 @@ services:
         condition: service_healthy
       indexer_service:
         condition: service_healthy
-    networks:
-      - multiagent
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - codebase_chat
 
-  # API Gateway
+  # ============================================================================
+  # API GATEWAY
+  # ============================================================================
+
   gateway:
     build:
       context: .
       dockerfile: docker/Dockerfile.gateway
-    container_name: multiagent-gateway
+    container_name: gateway
     ports:
       - "8000:8000"
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-production}
-      - ORCHESTRATOR_SERVICE_URL=http://orchestrator_service:8001
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - GATEWAY_HOST=0.0.0.0
-      - GATEWAY_PORT=8000
-      - GATEWAY_RELOAD=${GATEWAY_RELOAD:-false}
+      ORCHESTRATOR_SERVICE_URL: http://orchestrator_service:8001
+      REDIS_URL: redis://:redis_password@redis:6379/2
+      LOG_LEVEL: INFO
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 8000
     depends_on:
       orchestrator_service:
         condition: service_healthy
-    volumes:
-      - /tmp/repositories:/tmp/repositories
-    networks:
-      - multiagent
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      start_period: 20s
+      interval: 10s
+      timeout: 5s
       retries: 3
+    networks:
+      - codebase_chat
 
-  # Streamlit UI
+  # ============================================================================
+  # STREAMLIT UI
+  # ============================================================================
+
   streamlit:
     build:
       context: .
       dockerfile: docker/Dockerfile.streamlit
-    container_name: multiagent-streamlit
+    container_name: streamlit
     ports:
       - "8501:8501"
-    depends_on:
-      - gateway
-    networks:
-      - multiagent
-    volumes:
-      - ./streamlit_app.py:/app/streamlit_app.py
-      - ./mermaid_renderer.py:/app/mermaid_renderer.py
-      - ./network_graph_renderer.py:/app/network_graph_renderer.py
-      - ./relationship_mappings.py:/app/relationship_mappings.py
     environment:
-      - PYTHONPATH=/app
-      - API_BASE=http://gateway:8000
+      API_BASE: http://gateway:8000
+      LOG_LEVEL: INFO
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - codebase_chat
 
 volumes:
   neo4j_data:
-    driver: local
-  neo4j_logs:
     driver: local
   redis_data:
     driver: local
@@ -248,5 +263,5 @@ volumes:
     driver: local
 
 networks:
-  multiagent:
+  codebase_chat:
     driver: bridge

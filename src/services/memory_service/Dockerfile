@@ -35,15 +35,12 @@ ENV PATH=/root/.local/bin:$PATH
 COPY src/ src/
 COPY .env.example .env.example
 
-# Create volume for repositories
-RUN mkdir -p /tmp/repositories
+# Expose port
+EXPOSE 8005
 
-# Expose port (for debugging)
-EXPOSE 8002
-
-# Health check (simple TCP check)
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import socket; socket.create_connection(('localhost', 8002), timeout=2)" || exit 1
+    CMD curl -f http://localhost:8005/health || exit 1
 
-# Run indexer agent
-CMD ["python3", "-m", "src.agents.indexer_agent"]
+# Run memory service
+CMD ["uvicorn", "src.services.memory_service.main:app", "--host", "0.0.0.0", "--port", "8005"]

@@ -35,12 +35,15 @@ ENV PATH=/root/.local/bin:$PATH
 COPY src/ src/
 COPY .env.example .env.example
 
-# Expose port (for debugging)
-EXPOSE 8003
+# Create volume for repositories
+RUN mkdir -p /tmp/repositories
 
-# Health check (simple TCP check)
+# Expose port
+EXPOSE 8002
+
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python3 -c "import socket; socket.create_connection(('localhost', 8003), timeout=2)" || exit 1
+    CMD curl -f http://localhost:8002/health || exit 1
 
-# Run graph query agent
-CMD ["python3", "-m", "src.agents.graph_query_agent"]
+# Run indexer service
+CMD ["uvicorn", "src.services.indexer_service.main:app", "--host", "0.0.0.0", "--port", "8002"]
