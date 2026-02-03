@@ -1,78 +1,63 @@
 """
-Gateway dependencies and globals.
+Gateway dependencies - MCP service clients.
 
-WHAT: Centralized access to global agent instances
-WHY: Avoid circular imports and manage agent lifecycle
-HOW: Export agent getters that are initialized during startup
+WHAT: Centralized access to MCP service clients
+WHY: Manage service communication and health checks
+HOW: Export client getters initialized during startup
 """
 
 from typing import Optional
+import httpx
 
-from ..agents.orchestrator_agent import OrchestratorAgent
-from ..agents.indexer_agent import IndexerAgent
-from ..agents.graph_query_agent import GraphQueryAgent
-from ..agents.code_analyst_agent import CodeAnalystAgent
+# Global MCP service URLs (set from environment)
+MEMORY_SERVICE_URL: str = "http://localhost:8005"
+GRAPH_QUERY_SERVICE_URL: str = "http://localhost:8003"
+CODE_ANALYST_SERVICE_URL: str = "http://localhost:8004"
+INDEXER_SERVICE_URL: str = "http://localhost:8002"
+ORCHESTRATOR_SERVICE_URL: str = "http://localhost:8001"
 
-# Global agent instances (initialized during app startup)
-orchestrator: Optional[OrchestratorAgent] = None
-indexer: Optional[IndexerAgent] = None
-graph_query: Optional[GraphQueryAgent] = None
-code_analyst: Optional[CodeAnalystAgent] = None
-
-
-def get_orchestrator() -> OrchestratorAgent:
-    """Get orchestrator agent instance."""
-    global orchestrator
-    if not orchestrator:
-        raise RuntimeError("Orchestrator not initialized")
-    return orchestrator
+# HTTP clients
+memory_client: Optional[httpx.AsyncClient] = None
+orchestrator_client: Optional[httpx.AsyncClient] = None
+graph_query_client: Optional[httpx.AsyncClient] = None
+code_analyst_client: Optional[httpx.AsyncClient] = None
+indexer_client: Optional[httpx.AsyncClient] = None
 
 
-def get_indexer() -> IndexerAgent:
-    """Get indexer agent instance."""
-    global indexer
-    if not indexer:
-        raise RuntimeError("Indexer not initialized")
-    return indexer
-
-
-def get_graph_query() -> GraphQueryAgent:
-    """Get graph query agent instance."""
-    global graph_query
-    if not graph_query:
-        raise RuntimeError("Graph query agent not initialized")
-    return graph_query
-
-
-def get_code_analyst() -> CodeAnalystAgent:
-    """Get code analyst agent instance."""
-    global code_analyst
-    if not code_analyst:
-        raise RuntimeError("Code analyst not initialized")
-    return code_analyst
-
-
-def init_agents(orch, idx, gq, ca) -> None:
-    """
-    Initialize global agent instances.
+async def init_clients(
+    memory_url: str = MEMORY_SERVICE_URL,
+    orchestrator_url: str = ORCHESTRATOR_SERVICE_URL,
+    graph_query_url: str = GRAPH_QUERY_SERVICE_URL,
+    code_analyst_url: str = CODE_ANALYST_SERVICE_URL,
+    indexer_url: str = INDEXER_SERVICE_URL,
+) -> None:
+    """Initialize HTTP clients for MCP services."""
+    global memory_client, orchestrator_client, graph_query_client, code_analyst_client, indexer_client
     
-    Args:
-        orch: Orchestrator agent
-        idx: Indexer agent
-        gq: Graph query agent
-        ca: Code analyst agent
-    """
-    global orchestrator, indexer, graph_query, code_analyst
-    orchestrator = orch
-    indexer = idx
-    graph_query = gq
-    code_analyst = ca
+    memory_client = httpx.AsyncClient(base_url=memory_url, timeout=30.0)
+    orchestrator_client = httpx.AsyncClient(base_url=orchestrator_url, timeout=30.0)
+    graph_query_client = httpx.AsyncClient(base_url=graph_query_url, timeout=30.0)
+    code_analyst_client = httpx.AsyncClient(base_url=code_analyst_url, timeout=30.0)
+    indexer_client = httpx.AsyncClient(base_url=indexer_url, timeout=30.0)
 
 
-def shutdown_agents() -> None:
-    """Reset global agent instances (for shutdown)."""
-    global orchestrator, indexer, graph_query, code_analyst
-    orchestrator = None
-    indexer = None
-    graph_query = None
-    code_analyst = None
+async def shutdown_clients() -> None:
+    """Close all HTTP clients."""
+    global memory_client, orchestrator_client, graph_query_client, code_analyst_client, indexer_client
+    
+    if memory_client:
+        await memory_client.aclose()
+    if orchestrator_client:
+        await orchestrator_client.aclose()
+    if graph_query_client:
+        await graph_query_client.aclose()
+    if code_analyst_client:
+        await code_analyst_client.aclose()
+    if indexer_client:
+        await indexer_client.aclose()
+    
+    memory_client = None
+    orchestrator_client = None
+    graph_query_client = None
+    code_analyst_client = None
+    indexer_client = None

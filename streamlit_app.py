@@ -18,9 +18,12 @@ sys.path.insert(0, '/mnt/project')
 from mermaid_renderer import render_mermaid_diagram
 from relationship_mappings import get_cypher_query_templates, get_query_description
 from network_graph_renderer import render_network_graph, extract_nodes_and_edges
+INDEXER_SERVICE = os.getenv("INDEXER_SERVICE_URL", "http://localhost:8002")
+GRAPH_QUERY_SERVICE = os.getenv("GRAPH_QUERY_SERVICE_URL", "http://localhost:8003")
+ORCHESTRATOR_SERVICE = os.getenv("ORCHESTRATOR_SERVICE_URL", "http://localhost:8001")
 
 # Configuration
-API_BASE = os.getenv("API_BASE", "http://gateway:8000")
+API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 REFRESH_INTERVAL = 3  # seconds
 
 # Page config
@@ -97,6 +100,8 @@ if "embeddings_created" not in st.session_state:
     st.session_state.embeddings_created = False
 if "last_repo_url" not in st.session_state:
     st.session_state.last_repo_url = None
+if "current_job_id" not in st.session_state:
+    st.session_state.current_job_id = None
 # Pinecone chunk popup states
 for i in range(1, 100):
     if f"show_chunk_{i}" not in st.session_state:
@@ -145,7 +150,7 @@ with tab_chat:
             use_container_width=True,
             key="embed_btn",
             help="Create 650-line code chunks and generate embeddings for semantic search"
-        )
+                        )   
         
         if embed_button:
             if not repo_url:
@@ -154,297 +159,102 @@ with tab_chat:
                 st.session_state.embedding_active = True
                 st.session_state.last_repo_url = repo_url
                 st.rerun()
+
+# Show embedding progress if active
+if st.session_state.get("embedding_active", False):
+    st.markdown("### Embedding Progress")
+    
+    progress_placeholder = st.empty()
+    status_container = st.container()
+    
+    try:
+        embed_url = st.session_state.get("last_repo_url", repo_url)
         
-        # Show embedding progress if active
-        if st.session_state.get("embedding_active", False):
-            st.markdown("### Embedding Progress")
+        if embed_url:
+            with progress_placeholder:
+                st.progress(25, text="Calling MCP Indexer Tool...")
             
-            progress_placeholder = st.empty()
-            status_container = st.container()
+            with status_container:
+                with st.spinner("Indexing repository via MCP..."):
+                    # Call Orchestrator to execute indexer tool
+                    embed_res = requests.post(
+                        f"{ORCHESTRATOR_SERVICE}/execute",
+                        json={
+                            "tool_name": "index_repository",
+                            "tool_input": {
+                                "repo_url": embed_url,
+                                "branch": "main"
+                            }
+                        },
+                        timeout=300
+                    )
             
-            try:
-                # Get repository URL
-                embed_url = st.session_state.get("last_repo_url", repo_url)
+            if embed_res.ok:
+                embed_data = embed_res.json()
                 
-                if embed_url:
-                    with progress_placeholder:
-                        st.progress(25, text="Starting embedding process...")
-                    
-                    # Call embedding API
-                    with status_container:
-                        with st.spinner("Creating embeddings... This may take a few minutes"):
-                            embed_res = requests.post(
-                                f"{API_BASE}/api/embeddings/create",
-                                json={
-                                    "repo_url": embed_url,
-                                    "chunk_size": 650
-                                },
-                                timeout=600  # 10 minute timeout
-                            )
-                    
-                    if embed_res.ok:
-                        embed_data = embed_res.json()
-                        
-                        # Check if successful or fallback
-                        if embed_data.get('success') == False:
-                            # Pinecone not configured - graceful fallback
-                            with status_container:
-                                st.warning(f"⚠️ {embed_data.get('message', 'Embeddings not available')}")
-                                st.info(f"💡 Fallback: {embed_data.get('fallback', 'Neo4j graph search available')}")
-                                st.caption(embed_data.get('note', ''))
-                            
-                            st.session_state.embedding_active = False
-                            st.session_state.embeddings_created = False
-                        
-                        else:
-                            # Successfully created embeddings
-                            with progress_placeholder:
-                                st.progress(100, text="Embedding Complete!")
-                            
-                            with status_container:
-                                st.success("✅ Embeddings Created Successfully!")
-                            
-                                col1, col2 = st.columns(2)
-                                with col1:
-                                    st.metric(
-                                        "Code Chunks",
-                                        embed_data.get('chunks_created', 0)
-                                    )
-                                with col2:
-                                    st.metric(
-                                        "Vectors Stored",
-                                        embed_data.get('vectors_upserted', embed_data.get('embeddings_generated', 0))
-                                    )
-                            
-                                embed_stats = embed_data.get('stats', {})
-                                st.info(f"""
-                                **Embedding Details:**
-                                - Repository: {embed_data.get('repo_id', 'unknown')}
-                                - Chunks Created: {embed_data.get('chunks_created', 0)}
-                                - Vectors Upserted: {embed_data.get('vectors_upserted', 0)}
-                                - Embedding Dimension: {embed_stats.get('dimension', 384)}
-                                - Metric: {embed_stats.get('metric', 'cosine')}
-                                """)
-                            
-                            st.session_state.embedding_active = False
-                            st.session_state.embeddings_created = True
-                            time.sleep(3)
-                        
-                    else:
-                        with status_container:
-                            st.warning(f"⚠️ Embedding service unavailable: {embed_res.text}")
-                            st.info("💡 Using Neo4j graph search instead (no semantic search)")
-                        st.session_state.embedding_active = False
-                        
-            except requests.exceptions.Timeout:
-                with status_container:
-                    st.error("Embedding timeout - large repository may take longer")
-                st.session_state.embedding_active = False
-            except Exception as e:
-                with status_container:
-                    st.error(f"Error: {str(e)}")
-                st.session_state.embedding_active = False
-        
-        # Show embedding status
-        if st.session_state.get("embeddings_created", False):
-            st.success("Embeddings Ready for Search!")
-        
-        if start_index and repo_url:
-            st.session_state.indexing_active = True
-            try:
-                # Show progress modal instead of logger
-                st.toast(f"🚀 Starting indexing: {repo_url}")
+                with progress_placeholder:
+                    st.progress(100, text="Indexing Complete!")
                 
-                res = requests.post(
-                    f"{API_BASE}/api/index",
-                    json={"repo_url": repo_url, "full_index": True},
-                    timeout=10
-                )
-                if res.ok:
-                    job_data = res.json()
-                    st.session_state.current_job_id = job_data.get('job_id')
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.session_state.indexing_active = False
-                    st.error(f"Error: {res.text}")
-            except Exception as e:
-                st.session_state.indexing_active = False
-                st.error(f"Connection error: {str(e)}")
-        
-        # Ž­ MODAL OVERLAY: Show if indexing active
-        if st.session_state.indexing_active and st.session_state.current_job_id:
-            # CSS for modal overlay (subtle blur, no black overlay)
-            st.markdown("""
-            <style>
-            .modal-overlay {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background-color: transparent;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                z-index: 9999;
-                backdrop-filter: blur(3px);
-            }
-            .modal-box {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                padding: 60px 50px;
-                border-radius: 15px;
-                text-align: center;
-                box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
-                max-width: 550px;
-                color: white;
-            }
-            .modal-title {
-                font-size: 32px;
-                font-weight: bold;
-                margin-bottom: 15px;
-            }
-            .modal-message {
-                font-size: 18px;
-                margin-bottom: 40px;
-                opacity: 0.95;
-            }
-            .modal-warning {
-                font-size: 14px;
-                opacity: 0.85;
-                background: rgba(0, 0, 0, 0.2);
-                padding: 15px;
-                border-radius: 8px;
-                margin-top: 30px;
-            }
-            .spinner {
-                display: inline-block;
-                font-size: 48px;
-                animation: spin 2s linear infinite;
-                margin-bottom: 20px;
-            }
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-            </style>
-            """, unsafe_allow_html=True)
-            
-            # Streaming progress loop
-            job_id = st.session_state.current_job_id
-            max_attempts = 300  # 5 minutes with 1 second polling
-            attempt = 0
-            
-            # Create placeholders for streaming updates
-            modal_container = st.container()
-            
-            while attempt < max_attempts:
-                try:
-                    # Poll job status
-                    jobs_res = requests.get(f"{API_BASE}/api/index/jobs/{job_id}", timeout=10)
-                    if jobs_res.ok:
-                        job = jobs_res.json()
-                        status = job.get("status")
-                        progress = job.get("progress", 0)
-                        files = job.get("files_processed", 0)
-                        entities = job.get("entities_created", 0)
-                        relationships = job.get("relationships_created", 0)
-                        
-                        # Update modal with streaming progress
-                        with modal_container:
-                            st.markdown("""
-                            <div class="modal-overlay">
-                                <div class="modal-box">
-                                    <div class="spinner"></div>
-                                    <div class="modal-title">Indexing Repository</div>
-                                    <div class="modal-message">Processing your codebase...</div>
-                            """, unsafe_allow_html=True)
-                            
-                            # Streaming progress bar
-                            progress_val = min(progress / 100, 1.0)
-                            st.progress(progress_val, text=f"Progress: {progress}%")
-                            
-                            # Live metrics (3 columns)
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Files", files)
-                            with col2:
-                                st.metric("Entities", entities)
-                            with col3:
-                                st.metric("Relations", relationships)
-                            
-                            st.markdown("""
-                                    <div class="modal-warning">
-                                         <strong>This may take 1-2 minutes</strong><br>
-                                        Please keep this tab open and do not refresh
-                                    </div>
-                                </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        #  COMPLETED: Clear state and rerun
-                        if status == "completed":
-                            st.session_state.indexing_active = False
-                            st.session_state.current_job_id = None
-                            st.cache_data.clear()
-                            time.sleep(1)
-                            st.rerun()
-                        
-                        # âŒ FAILED: Show error
-                        elif status == "failed":
-                            st.session_state.indexing_active = False
-                            st.error(f"Indexing failed: {job.get('error', 'Unknown error')}")
-                            time.sleep(3)
-                            st.rerun()
-                        
-                        # â³ PENDING/RUNNING: Keep polling
-                        time.sleep(1)
-                        attempt += 1
-                    else:
-                        break
-                except Exception as e:
-                    attempt += 1
-                    time.sleep(1)
-            
-            # Timeout
-            st.session_state.indexing_active = False
-            st.error(" Indexing timeout. Please refresh.")
+                with status_container:
+                    st.success("✅ Repository Indexed Successfully!")
+                    
+                    stats = embed_data.get('data', {}).get('statistics', {})
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Files Indexed", stats.get('files_indexed', 0))
+                    with col2:
+                        st.metric("Classes Found", stats.get('classes', 0))
+                    with col3:
+                        st.metric("Functions Found", stats.get('functions', 0))
+                
+                st.session_state.embedding_active = False
+                st.session_state.embeddings_created = True
+                time.sleep(2)
+            else:
+                with status_container:
+                    st.error(f"⚠️ Indexing failed: {embed_res.text}")
+                st.session_state.embedding_active = False
+                
+    except requests.exceptions.Timeout:
+        with status_container:
+            st.error("Indexing timeout - large repository")
+        st.session_state.embedding_active = False
+    except Exception as e:
+        with status_container:
+            st.error(f"Error: {str(e)}")
+        st.session_state.embedding_active = False
         
         if refresh_status:
             st.rerun()
         
         st.divider()
         
-        #  Only show completed jobs summary (NOT active jobs)
-        try:
-            jobs_res = requests.get(f"{API_BASE}/api/index/jobs", timeout=10)
-            if jobs_res.ok:
-                all_jobs = jobs_res.json().get("jobs", [])
-                completed_jobs = [j for j in all_jobs if j.get("status") == "completed"]
-                
-                if completed_jobs:
-                    st.subheader(" Recently Indexed Repositories")
-                    for job in completed_jobs[-3:]:  # Show last 3
-                        col1, col2, col3, col4 = st.columns(4)
-                        with col1:
-                            st.metric("Packages", job.get("files_processed", 0))
-                        with col2:
-                            st.metric("Entities", job.get("entities_created", 0))
-                        with col3:
-                            st.metric("Relations", job.get("relationships_created", 0))
-                        with col4:
-                            st.metric("Status", " Done")
-        except:
-            pass  # Silent: no completed jobs to show
-        
-        # DATABASE STATS with State Management (NO CACHE - updates in real-time)
         # DATABASE STATS with State Management (NO CACHE - updates in real-time)
         st.subheader(" Neo4j Database Stats")
         try:
-            res = requests.get(f"{API_BASE}/api/index/status", timeout=10)
+            # Call Orchestrator to execute get_index_status MCP tool
+            res = requests.post(
+                f"{ORCHESTRATOR_SERVICE}/execute",
+                json={
+                    "tool_name": "get_index_status",
+                    "tool_input": {}
+                },
+                timeout=10
+            )
             if res.ok:
-                stats = res.json().get("statistics", {})
-                nodes = stats.get("nodes", {})
+                tool_result = res.json()
+                stats = tool_result.get('data', {}).get('statistics', {})
+                nodes = stats.get('nodes', {})
+                
+                # Store stats in session state
+                st.session_state.db_stats = {
+                    "Package": nodes.get("Package", 0),
+                    "File": nodes.get("File", 0),
+                    "Class": nodes.get("Class", 0),
+                    "Function": nodes.get("Function", 0),
+                    "Parameter": nodes.get("Parameter", 0),
+                    "Type": nodes.get("Type", 0),
+                }
                 
                 # Store stats in session state (persists across reruns during indexing)
                 st.session_state.db_stats = {
@@ -475,7 +285,7 @@ with tab_chat:
         st.subheader("⚡ Vector Embeddings (Pinecone)")
         
         try:
-            pinecone_res = requests.get(f"{API_BASE}/api/embeddings/stats", timeout=10)
+            pinecone_res = requests.get(f"{INDEXER_SERVICE}/embeddings/stats", timeout=10)
             if pinecone_res.ok:
                 pinecone_data = pinecone_res.json()
                 
@@ -542,25 +352,35 @@ with tab_chat:
             with col1:
                 if st.button("Check DB Stats"):
                     try:
-                        response = requests.get(f"{API_BASE}/health", timeout=5)
+                        response = requests.post(
+                            f"{ORCHESTRATOR_SERVICE}/execute",
+                            json={
+                                "tool_name": "get_index_status",
+                                "tool_input": {}
+                            },
+                            timeout=5
+                        )
                         if response.ok:
-                            health = response.json()
-                            neo4j_stats = health.get("components", {}).get("neo4j", {}).get("statistics", {})
+                            tool_result = response.json()
+                            neo4j_stats = tool_result.get('data', {}).get('statistics', {})
                             
                             st.write("**Database Stats:**")
                             nodes = neo4j_stats.get("nodes", {})
                             rels = neo4j_stats.get("relationships", {})
-                            
-                            node_col, rel_col = st.columns(2)
-                            with node_col:
-                                st.write("**Nodes:**")
-                                for node_type, count in sorted(nodes.items()):
-                                    st.write(f"   {node_type}: {count}")
-                            
-                            with rel_col:
-                                st.write("**Relationships:**")
-                                for rel_type, count in sorted(rels.items()):
-                                    st.write(f"   {rel_type}: {count}")
+
+                            if nodes:
+                                node_col, rel_col = st.columns(2)
+                                with node_col:
+                                    st.write("**Nodes:**")
+                                    for node_type, count in sorted(nodes.items()):
+                                        st.write(f"   {node_type}: {count}")
+                                
+                                with rel_col:
+                                    st.write("**Relationships:**")
+                                    for rel_type, count in sorted(rels.items()):
+                                        st.write(f"   {rel_type}: {count}")
+                            else:
+                                st.info("No nodes found. Index a repository first.")
                     except Exception as e:
                         st.error(f"Error: {str(e)}")
     
@@ -749,7 +569,7 @@ with tab_chat:
                         payload = {"query": query, "session_id": st.session_state.session_id or "streamlit-demo"}
                         
                         res = requests.post(
-                            f"{API_BASE}/api/agentic-chat",
+                            f"{ORCHESTRATOR_SERVICE}/execute",
                             json=payload,
                             timeout=120  # Agentic can take longer
                         )
@@ -840,7 +660,7 @@ with tab_chat:
                     
                     with st.spinner("Processing..."):
                         res = requests.post(
-                            f"{API_BASE}/api/rag-chat",
+                            f"{ORCHESTRATOR_SERVICE}/execute",
                             json=payload,
                             timeout=60
                         )
@@ -959,8 +779,13 @@ with tab_graph:
             LIMIT 5000
             """
             response = requests.post(
-                f"{API_BASE}/api/query/execute",
-                json={"query": cypher},
+                f"{ORCHESTRATOR_SERVICE}/execute",
+                json={
+                    "tool_name": "execute_query",
+                    "tool_input": {
+                        "query": cypher
+                    }
+                },
                 timeout=10
             )
             if response.ok:
@@ -1077,14 +902,16 @@ with tab_graph:
                     for idx, query in enumerate(cypher_queries, 1):
                         try:
                             cypher_exec_response = requests.post(
-                                f"{API_BASE}/api/query/execute",
+                                f"{ORCHESTRATOR_SERVICE}/execute",
                                 json={
-                                    "query": query,
-                                    "params": {"name": entity_name}
+                                    "tool_name": "execute_query",
+                                    "tool_input": {
+                                        "query": query,
+                                        "parameters": {"name": entity_name}
+                                    }
                                 },
                                 timeout=20
                             )
-                            
                             if cypher_exec_response.ok:
                                 exec_data = cypher_exec_response.json()
                                 results = exec_data.get("result", [])
@@ -1154,11 +981,17 @@ with tab_graph:
                 try:
                     # Call your existing mermaid endpoint
                     mermaid_response = requests.post(
-                        f"{API_BASE}/api/graph/generate-mermaid",
-                        json={"query_results": all_results},
-                        params={"entity_name": entity_name, "entity_type": selected_type},
-                        timeout=60
-                    )
+                            f"{ORCHESTRATOR_SERVICE}/execute",
+                            json={
+                                "tool_name": "generate_mermaid",
+                                "tool_input": {
+                                    "query_results": all_results,
+                                    "entity_name": entity_name,
+                                    "entity_type": selected_type
+                                }
+                            },
+                            timeout=60
+                        )
                     
                     if mermaid_response.ok:
                         mermaid_data = mermaid_response.json()
@@ -1220,8 +1053,11 @@ with tab_tools:
             if st.button("🗑️ Clear Database"):
                 try:
                     res = requests.post(
-                        f"{API_BASE}/api/query/execute",
-                        json={"query": "MATCH (n) DETACH DELETE n", "params": {}},
+                        f"{ORCHESTRATOR_SERVICE}/execute",
+                        json={
+                            "tool_name": "clear_index",
+                            "tool_input": {}
+                        },
                         timeout=30
                     )
                     if res.ok:
@@ -1252,7 +1088,7 @@ with tab_tools:
                         delete_repo_id = repo_id if repo_id else "all"
                         
                         delete_res = requests.delete(
-                            f"{API_BASE}/api/embeddings/delete",
+                            f"{INDEXER_SERVICE}/embeddings/delete",
                             params={"repo_id": delete_repo_id},
                             timeout=30
                         )
@@ -1278,7 +1114,7 @@ with tab_tools:
         st.subheader("📊 Embeddings Stats Quick Check")
         if st.button("🔄 Refresh Embeddings Stats", use_container_width=True):
             try:
-                stats_res = requests.get(f"{API_BASE}/api/embeddings/stats", timeout=10)
+                stats_res = requests.get(f"{INDEXER_SERVICE}/embeddings/stats", timeout=10)
                 if stats_res.ok:
                     stats_data = stats_res.json()
                     if stats_data.get("status") == "available":

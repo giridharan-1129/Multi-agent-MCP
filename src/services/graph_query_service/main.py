@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
-from neo4j import AsyncDriver, asyncio as aioneo4j
 
 from ...shared.mcp_server import BaseMCPServer, ToolResult
 from ...shared.neo4j_service import Neo4jService

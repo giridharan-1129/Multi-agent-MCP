@@ -6,7 +6,7 @@ Handles all Neo4j database operations for the knowledge graph.
 
 from typing import Any, Dict, List, Optional
 from fastapi.concurrency import run_in_threadpool
-
+from neo4j import GraphDatabase
 import logging
 
 logger = logging.getLogger(__name__)
@@ -28,9 +28,21 @@ class Neo4jService:
         self.password = password
         self.database = database
         self.driver = None
-        
+    
+    async def verify_connection(self) -> bool:
+        """Verify Neo4j connection is working."""
+        try:
+            if self.driver is None:
+                self.driver = GraphDatabase.driver(self.uri, auth=(self.username, self.password))
+            # Test connection
+            with self.driver.session(database=self.database) as session:
+                session.run("RETURN 1")
+            return True
+        except Exception as e:
+            logger.error(f"Neo4j connection verification failed: {e}")
+            return False  
+
     async def connect(self) -> bool:
-        from neo4j import GraphDatabase
         import asyncio
 
         retries = 10

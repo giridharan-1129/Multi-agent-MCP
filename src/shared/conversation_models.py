@@ -34,7 +34,7 @@ class ConversationTurn(BaseModel):
     turn_number: int
     role: str  # "user" or "assistant"
     content: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    turn_meta: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
     
     class Config:

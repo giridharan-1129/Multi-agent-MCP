@@ -9,23 +9,11 @@ import os
 from contextlib import asynccontextmanager
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, Depends
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import httpx
 
-from .routes import (
-    agentic_chat,
-    rag_chat,
-    chat,
-    health,
-    indexing,
-    embeddings,
-    query,
-    graph_visualization,
-    analysis,
-    websocket,
-)
+from .routes import health
 from ..shared.logger import get_logger
 from ..shared.redis_client import RedisClientManager
 
@@ -80,59 +68,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ============================================================================
-# HEALTH CHECK
-# ============================================================================
-
-@app.get("/health")
-async def health_check():
-    """Check gateway and all services health."""
-    health_status = {
-        "gateway": "healthy",
-        "timestamp": None,
-        "services": {}
-    }
-    
-    try:
-        # Check orchestrator
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            try:
-                resp = await client.get(f"{orchestrator_url}/health")
-                health_status["services"]["orchestrator"] = "healthy" if resp.status_code == 200 else "unhealthy"
-            except Exception as e:
-                health_status["services"]["orchestrator"] = "unreachable"
-                logger.warning(f"Orchestrator health check failed: {e}")
-        
-        # Check Redis
-        if redis_client:
-            redis_ok = await redis_client.health_check()
-            health_status["services"]["redis"] = "healthy" if redis_ok else "unhealthy"
-    
-    except Exception as e:
-        health_status["gateway"] = "unhealthy"
-        logger.error(f"Health check failed: {e}")
-    
-    return health_status
-
-
-# ============================================================================
-# SERVICE ROUTES
-# ============================================================================
-
 # Include routers
-app.include_router(health.router, prefix="/api", tags=["health"])
-app.include_router(agentic_chat.router, prefix="/api", tags=["chat"])
-app.include_router(rag_chat.router, prefix="/api", tags=["chat"])
-app.include_router(chat.router, prefix="/api", tags=["chat"])
-app.include_router(indexing.router, prefix="/api", tags=["indexing"])
-app.include_router(embeddings.router, prefix="/api", tags=["embeddings"])
-app.include_router(query.router, prefix="/api", tags=["query"])
-app.include_router(graph_visualization.router, prefix="/api", tags=["graph"])
-app.include_router(analysis.router, prefix="/api", tags=["analysis"])
-app.include_router(websocket.router, tags=["websocket"])
+app.include_router(health.router, tags=["health"])
 
 # ============================================================================
-# ORCHESTRATOR PROXY ROUTE
+# ORCHESTRATOR PROXY ROUTES
 # ============================================================================
 
 @app.get("/api/orchestrator/tools")
@@ -181,11 +121,8 @@ async def root():
         "description": "Multi-agent system for FastAPI repository analysis",
         "endpoints": {
             "health": "/health",
-            "chat": "/api/agentic-chat",
-            "rag": "/api/rag-chat",
-            "indexing": "/api/index",
-            "graph": "/api/graph/statistics",
-            "websocket": "/ws/chat"
+            "orchestrator_tools": "/api/orchestrator/tools",
+            "orchestrator_execute": "/api/orchestrator/execute",
         },
         "orchestrator": orchestrator_url
     }

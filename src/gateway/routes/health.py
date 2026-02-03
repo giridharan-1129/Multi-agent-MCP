@@ -2,24 +2,45 @@
 Health check and info endpoints.
 
 WHAT: /health and /agents endpoints
-WHY: System health monitoring and agent discovery
-HOW: Query agent status and Neo4j statistics
+WHY: System health monitoring and service discovery
+HOW: Query service status via HTTP
 """
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
+import httpx
 
 from ...shared.logger import get_logger, generate_correlation_id, set_correlation_id
-from ...shared.neo4j_service import get_neo4j_service
 from ..dependencies import (
-    get_orchestrator,
-    get_indexer,
-    get_graph_query,
-    get_code_analyst,
+    MEMORY_SERVICE_URL,
+    ORCHESTRATOR_SERVICE_URL,
+    GRAPH_QUERY_SERVICE_URL,
+    CODE_ANALYST_SERVICE_URL,
+    INDEXER_SERVICE_URL,
 )
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["health"])
+
+SERVICES = {
+    "memory": MEMORY_SERVICE_URL,
+    "orchestrator": ORCHESTRATOR_SERVICE_URL,
+    "graph_query": GRAPH_QUERY_SERVICE_URL,
+    "code_analyst": CODE_ANALYST_SERVICE_URL,
+    "indexer": INDEXER_SERVICE_URL,
+}
+
+
+async def check_service_health(url: str) -> dict:
+    """Check if a service is healthy."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(f"{url}/health")
+            if response.status_code == 200:
+                return response.json()
+            return {"status": "unhealthy", "code": response.status_code}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
 
 
 @router.get("/health")
@@ -28,43 +49,27 @@ async def health_check():
     Health check endpoint.
 
     Returns:
-        Health status of all components
+        Health status of all MCP services
     """
     correlation_id = generate_correlation_id()
     set_correlation_id(correlation_id)
 
     try:
-        neo4j = get_neo4j_service()
-        stats = await neo4j.get_graph_statistics()
+        services = {}
+        for name, url in SERVICES.items():
+            services[name] = await check_service_health(url)
+
+        overall_status = "healthy" if all(
+            s.get("status") == "healthy" for s in services.values()
+        ) else "degraded"
 
         health = {
-            "status": "healthy",
-            "components": {
-                "orchestrator": {
-                    "name": get_orchestrator().name,
-                    "status": "healthy" if get_orchestrator().is_healthy else "offline",
-                },
-                "indexer": {
-                    "name": get_indexer().name,
-                    "status": "healthy" if get_indexer().is_healthy else "offline",
-                },
-                "graph_query": {
-                    "name": get_graph_query().name,
-                    "status": "healthy" if get_graph_query().is_healthy else "offline",
-                },
-                "code_analyst": {
-                    "name": get_code_analyst().name,
-                    "status": "healthy" if get_code_analyst().is_healthy else "offline",
-                },
-                "neo4j": {
-                    "status": "healthy",
-                    "statistics": stats,
-                },
-            },
+            "status": overall_status,
+            "services": services,
             "correlation_id": correlation_id,
         }
 
-        logger.info("Health check passed")
+        logger.info("Health check completed", status=overall_status)
         return health
 
     except Exception as e:
@@ -82,47 +87,15 @@ async def health_check():
 @router.get("/agents")
 async def list_agents():
     """
-    List all available agents.
+    List all available MCP services.
 
     Returns:
-        List of agents with their tools
+        List of services
     """
     correlation_id = generate_correlation_id()
     set_correlation_id(correlation_id)
 
-    agents_info = []
-
-    try:
-        agents_info.append({
-            "name": get_orchestrator().name,
-            "description": get_orchestrator().description,
-            "tools": get_orchestrator().list_tools(),
-        })
-
-        agents_info.append({
-            "name": get_indexer().name,
-            "description": get_indexer().description,
-            "tools": get_indexer().list_tools(),
-        })
-
-        agents_info.append({
-            "name": get_graph_query().name,
-            "description": get_graph_query().description,
-            "tools": get_graph_query().list_tools(),
-        })
-
-        agents_info.append({
-            "name": get_code_analyst().name,
-            "description": get_code_analyst().description,
-            "tools": get_code_analyst().list_tools(),
-        })
-
-        logger.info("Agents listed", count=len(agents_info))
-        return {
-            "agents": agents_info,
-            "correlation_id": correlation_id,
-        }
-
-    except Exception as e:
-        logger.error("Failed to list agents", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "services": list(SERVICES.keys()),
+        "correlation_id": correlation_id,
+    }

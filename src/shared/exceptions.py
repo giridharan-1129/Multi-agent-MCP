@@ -299,3 +299,7 @@ class LLMGenerationError(LLMError):
         self.model = model
         self.error_detail = error_detail
         super().__init__(f"LLM generation failed with {model}: {error_detail}")
+
+class MCPServerError(MCPException):
+    """Error in MCP server operation."""
+    pass

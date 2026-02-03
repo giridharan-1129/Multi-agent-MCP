@@ -15,6 +15,7 @@ from uuid import UUID
 import asyncio
 
 from sqlalchemy import create_engine, Column, String, DateTime, Integer, ARRAY, JSON, ForeignKey, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base, relationship, Session
@@ -35,15 +36,11 @@ Base = declarative_base()
 
 
 class SessionModel(Base):
-    """SQLAlchemy model for conversation sessions."""
     __tablename__ = "conversation_sessions"
-    
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(String(255), nullable=False, index=True)
-    session_name = Column(String(255), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, index=True)
-    closed_at = Column(DateTime, nullable=True)
-    metadata = Column(JSON, default={})
+    user_id = Column(String, nullable=False)
+    session_name = Column(String)
+    meta = Column(JSONB, default={})
     
     # Relationships
     turns = relationship("TurnModel", back_populates="session", cascade="all, delete-orphan")
@@ -58,7 +55,7 @@ class TurnModel(Base):
     turn_number = Column(Integer, nullable=False)
     role = Column(String(50), nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)
-    metadata = Column(JSON, default={})
+    turn_meta = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     
     # Relationships
@@ -143,7 +140,7 @@ class PostgreSQLClientManager:
         self,
         user_id: str,
         session_name: Optional[str] = None,
-        metadata: Dict[str, Any] = None
+        meta: Dict[str, Any] = None
     ) -> ConversationSession:
         """Create a new conversation session."""
         try:
@@ -151,7 +148,7 @@ class PostgreSQLClientManager:
                 db_session = SessionModel(
                     user_id=user_id,
                     session_name=session_name,
-                    metadata=metadata or {}
+                    meta=meta or {}
                 )
                 session.add(db_session)
                 await session.commit()
@@ -231,7 +228,7 @@ class PostgreSQLClientManager:
                     turn_number=turn_number,
                     role=role,
                     content=content,
-                    metadata=metadata or {}
+            turn_meta=metadata or {}
                 )
                 session.add(db_turn)
                 await session.commit()
@@ -349,7 +346,7 @@ class PostgreSQLClientManager:
             session_name=db_session.session_name,
             created_at=db_session.created_at,
             closed_at=db_session.closed_at,
-            metadata=db_session.metadata
+            meta=db_session.meta
         )
     
     @staticmethod
@@ -361,7 +358,7 @@ class PostgreSQLClientManager:
             turn_number=db_turn.turn_number,
             role=db_turn.role,
             content=db_turn.content,
-            metadata=db_turn.metadata,
+            turn_meta=db_turn.turn_meta,
             created_at=db_turn.created_at
         )
     
