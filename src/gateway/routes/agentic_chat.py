@@ -21,6 +21,7 @@ Example Flow:
 
 import json
 import os
+import requests
 from typing import Optional, AsyncGenerator, Dict, Any
 from fastapi import APIRouter, HTTPException
 from openai import OpenAI, AsyncOpenAI
@@ -153,7 +154,7 @@ def build_tools_schema():
             "type": "function",
             "function": {
                 "name": "compare_implementations",
-                "description": "Compare two code implementations for similarities and differences",
+                "description": "Compare two code entities side-by-side",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -167,6 +168,28 @@ def build_tools_schema():
                         }
                     },
                     "required": ["entity1", "entity2"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_semantics",
+                "description": "Semantic search in codebase using embeddings (Pinecone). Useful for finding code related to concepts or features",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Natural language query about code (e.g., 'how to handle authentication', 'error handling patterns')"
+                        },
+                        "top_k": {
+                            "type": "integer",
+                            "description": "Number of results to return (default: 5)",
+                            "default": 5
+                        }
+                    },
+                    "required": ["query"]
                 }
             }
         }
@@ -242,6 +265,48 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]) -> Dict[str, 
             )
             return {"success": result.success, "data": result.data, "error": result.error}
 
+        elif tool_name == "search_semantics":
+            # Search Pinecone for semantic matches
+            try:
+                query = tool_input.get("query", "")
+                top_k = tool_input.get("top_k", 5)
+                repo_id = tool_input.get("repo_id", "fastapi")  # Default to fastapi
+                
+                # Call the embeddings search endpoint
+                search_response = requests.post(
+                    f"{config.api_base}/api/embeddings/search",
+                    json={"query": query, "repo_id": repo_id, "top_k": top_k},
+                    timeout=30
+                )
+                
+                if search_response.ok:
+                    search_data = search_response.json()
+                    if search_data.get("success"):
+                        results = search_data.get("results", [])
+                        return {
+                            "success": True,
+                            "data": {
+                                "query": query,
+                                "results_count": len(results),
+                                "results": results
+                            }
+                        }
+                    else:
+                        return {
+                            "success": False,
+                            "error": search_data.get("error", "Semantic search failed")
+                        }
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Embeddings service error: {search_response.text[:100]}"
+                    }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Semantic search error: {str(e)}"
+                }
+
         else:
             return {"success": False, "error": f"Unknown tool: {tool_name}"}
 
@@ -285,7 +350,8 @@ async def agentic_chat(request: dict):
         client = OpenAI(api_key=config.openai.api_key or os.getenv("OPENAI_API_KEY"))
 
         # System prompt for agentic reasoning
-        system_prompt = """You are an expert FastAPI code analyst assistant with access to a complete knowledge graph of the FastAPI codebase.
+        # System prompt for agentic reasoning
+        system_prompt = """You are an expert FastAPI code analyst assistant with access to a complete knowledge graph of the FastAPI codebase and semantic search.
 
 Your role:
 1. Understand complex user questions about the codebase
@@ -295,16 +361,19 @@ Your role:
 5. Show your reasoning process
 
 Available tools:
-- find_entity: Search for classes, functions, modules
+- find_entity: Search for classes, functions, modules by name
 - get_dependencies: Find what something depends on
 - get_dependents: Find what uses something
 - analyze_function: Deep function analysis
 - analyze_class: Deep class analysis
 - find_patterns: Detect design patterns
 - compare_implementations: Compare two entities
+- search_semantics: Semantic search using embeddings (for concepts/features like "authentication", "error handling")
 
 Guidelines:
 - Be thorough but concise
+- Use search_semantics for conceptual/feature searches
+- Use find_entity for direct lookups
 - When you find something interesting, follow up with related queries
 - Use multiple tools to build a complete picture
 - Explain your reasoning at each step
@@ -325,6 +394,8 @@ Guidelines:
         max_iterations = 10
         iteration = 0
 
+        all_sources = []  # MOVE THIS HERE - outside the loop
+        
         while iteration < max_iterations:
             iteration += 1
 
@@ -337,8 +408,6 @@ Guidelines:
                 temperature=0.7,
             )
 
-            # Check if we're done
-            # Check if we're done
             if response.choices[0].finish_reason == "stop":
                 # Extract final response
                 final_response = response.choices[0].message.content
@@ -356,6 +425,7 @@ Guidelines:
                     "iterations": iteration,
                     "session_id": session_id,
                     "correlation_id": correlation_id,
+                    "retrieved_context": all_sources,  # Changed key name to match Streamlit
                 }
 
             # Process tool calls
@@ -373,7 +443,7 @@ Guidelines:
                     "tool_calls": response.choices[0].message.tool_calls
                 })
 
-                # Execute tools and add results
+                
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_input = json.loads(tool_call.function.arguments)
@@ -389,6 +459,23 @@ Guidelines:
 
                     thinking_steps.append(f"Result: {json.dumps(tool_result)[:200]}...")
 
+                    # Extract sources from semantic search results
+                    if tool_name == "search_semantics" and tool_result.get("success"):
+                        search_results = tool_result.get("data", {}).get("results", [])
+                        for result in search_results:
+                            all_sources.append({
+                                "source_type": "pinecone",
+                                "type": "code_chunk",
+                                "file_name": result.get("file_name", "unknown"),
+                                "content": result.get("content", ""),
+                                "preview": result.get("preview", ""),
+                                "lines": result.get("lines", "N/A"),
+                                "relevance": result.get("relevance", 0),
+                                "language": result.get("language", "python"),
+                                "start_line": result.get("start_line", "N/A"),
+                                "end_line": result.get("end_line", "N/A"),
+                            })
+
                     # Add tool result as separate message
                     messages.append({
                         "role": "tool",
@@ -401,6 +488,7 @@ Guidelines:
                 break
 
         # Fallback response if max iterations reached
+        # Fallback response if max iterations reached
         return {
             "response": "Analysis completed but required multiple iterations. Please check the thinking process for details.",
             "thinking_process": thinking_steps,
@@ -408,6 +496,7 @@ Guidelines:
             "iterations": iteration,
             "session_id": session_id,
             "correlation_id": correlation_id,
+            "retrieved_context": all_sources,  # Changed key name to match Streamlit
         }
 
     except HTTPException:

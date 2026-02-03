@@ -572,15 +572,14 @@ with tab_chat:
     with col_mode1:
         chat_mode = st.radio(
             "Chat Mode",
-            ["Agentic AI", "RAG Search"],
+            ["Agentic AI"],
             horizontal=True,
             key="chat_mode_selector"
         )
     
-    if chat_mode == "Agentic AI":
-        st.info("✨ **Agentic AI Mode**: GPT-4 autonomously reasons and chains tools. Shows thinking process.")
-    else:
-        st.info("**RAG Mode**: Retrieves context from embeddings + graph. Fast keyword search.")
+
+    st.info("✨ **Agentic AI Mode**: GPT-4 autonomously reasons and chains tools. Shows thinking process.")
+
     
     st.markdown("### Conversation History")
     
@@ -596,12 +595,50 @@ with tab_chat:
                         thinking_steps = msg.get("thinking_process", [])
                         tools_used = msg.get("tools_used", [])
                         iterations = msg.get("iterations", 0)
+                        retrieved_context = msg.get("retrieved_context", [])
                         
                         st.divider()
                         
                         with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=False):
                             for i, step in enumerate(thinking_steps, 1):
                                 st.caption(f"**Step {i}:** {step[:300]}...")
+                        
+                        # SHOW RETRIEVED CONTEXT FROM AGENTIC SEARCH
+                        if retrieved_context:
+                            embeddings_sources = [s for s in retrieved_context if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
+                            neo4j_sources = [s for s in retrieved_context if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                            
+                            if embeddings_sources:
+                                st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
+                                for j, source in enumerate(embeddings_sources, 1):
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([0.85, 0.15])
+                                        
+                                        with col1:
+                                            st.markdown(f"""
+**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
+- **Lines:** {source.get('lines', 'N/A')}
+- **Relevance:** {source.get('relevance', 'N/A')}
+- **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
+                                            """)
+                                        
+                                        with col2:
+                                            if st.button("📂 View", key=f"agentic_history_view_{j}"):
+                                                st.session_state[f"show_agentic_history_{j}"] = True
+                                    
+                                    if st.session_state.get(f"show_agentic_history_{j}"):
+                                        st.code(source.get('content', 'N/A'), language=source.get('language', 'python'))
+                            
+                            if neo4j_sources:
+                                st.write("**🔗 Neo4j Entity Relationships (Graph)**")
+                                for k, source in enumerate(neo4j_sources, 1):
+                                    with st.container(border=True):
+                                        st.markdown(f"""
+**{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
+- **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
+- **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
+- **Module:** {source.get('module', 'N/A')}
+                                        """)
                         
                         if tools_used:
                             st.write("**🔧 Tools Used:**")
@@ -612,85 +649,85 @@ with tab_chat:
                     else:
                         sources = msg.get("sources", [])
                         agents = msg.get("agents", [])
-                    
-                    if sources:
-                        # Separate pinecone and neo4j sources
-                        pinecone_sources = [s for s in sources if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
-                        neo4j_sources = [s for s in sources if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
                         
-                        # PINECONE CHUNKS
-                        if pinecone_sources:
-                            st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
-                            for j, source in enumerate(pinecone_sources, 1):
-                                with st.container(border=True):
-                                    col1, col2 = st.columns([0.85, 0.15])
+                        if sources:
+                            # Separate pinecone and neo4j sources
+                            pinecone_sources = [s for s in sources if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
+                            neo4j_sources = [s for s in sources if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                            
+                            # PINECONE CHUNKS
+                            if pinecone_sources:
+                                st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
+                                for j, source in enumerate(pinecone_sources, 1):
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([0.85, 0.15])
+                                        
+                                        with col1:
+                                            # Build citation text, omitting N/A and None values
+                                            citation_parts = [f"**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}"]
+
+                                            if source.get('lines') and source.get('lines') != 'N/A':
+                                                citation_parts.append(f"Lines {source.get('lines')}")
+
+                                            if source.get('relevance_percent') and source.get('relevance_percent') != 'N/A':
+                                                citation_parts.append(f"Relevance: {source.get('relevance_percent')}")
+
+                                            if source.get('reranked') is not None:
+                                                citation_parts.append(f"Reranked: {'✅ Yes' if source.get('reranked') else '❌ No'}")
+
+                                            if source.get('start_line') and source.get('start_line') != 'N/A':
+                                                citation_parts.append(f"Line {source.get('start_line')}-{source.get('end_line', 'N/A')}")
+
+                                            if source.get('preview') and source.get('preview') != 'N/A':
+                                                preview = source.get('preview')[:80] + "..." if len(source.get('preview', '')) > 80 else source.get('preview')
+                                                citation_parts.append(f"Preview: {preview}")
+
+                                            st.markdown(" | ".join(citation_parts))
+                                        
+                                        with col2:
+                                            if st.button("📂 View Code", key=f"pinecone_view_{j}", use_container_width=True):
+                                                st.session_state[f"show_pinecone_{j}"] = True
                                     
-                                    with col1:
-                                        # Build citation text, omitting N/A and None values
-                                        citation_parts = [f"**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}"]
+                                    # Pinecone code popup modal
+                                    if st.session_state.get(f"show_pinecone_{j}"):
+                                        st.markdown("---")
+                                        col_code, col_close = st.columns([0.95, 0.05])
+                                        with col_code:
+                                            st.write(f"**📄 {source.get('file_name', 'unknown')}** (Lines {source.get('lines', 'N/A')})")
+                                        with col_close:
+                                            if st.button("✕", key=f"pinecone_close_{j}"):
+                                                st.session_state[f"show_pinecone_{j}"] = False
+                                        
+                                        st.code(source.get('content', source.get('preview', 'Content not available')), language=source.get('language', 'python'))
+                                        st.markdown("---")
+                            
+                            # NEO4J RELATIONSHIPS
+                            if neo4j_sources:
+                                st.write("**🔗 Neo4j Entity Relationships (Graph)**")
+                                for k, source in enumerate(neo4j_sources, 1):
+                                    with st.container(border=True):
+                                        # Build Neo4j citation, omitting empty/N/A values
+                                        neo4j_lines = [f"**{source.get('entity_type', 'Unknown')}**: {source.get('entity', 'unknown')}"]
 
-                                        if source.get('lines') and source.get('lines') != 'N/A':
-                                            citation_parts.append(f"Lines {source.get('lines')}")
+                                        deps = source.get('dependencies', [])
+                                        if deps and deps != ['None'] and all(d != 'None' and d != 'N/A' for d in deps):
+                                            neo4j_lines.append(f"- Dependencies: {', '.join(deps[:3])}")
 
-                                        if source.get('relevance_percent') and source.get('relevance_percent') != 'N/A':
-                                            citation_parts.append(f"Relevance: {source.get('relevance_percent')}")
+                                        used_by = source.get('used_by', [])
+                                        if used_by and used_by != ['Not used'] and all(u != 'Not used' and u != 'N/A' for u in used_by):
+                                            neo4j_lines.append(f"- Used by: {', '.join(used_by[:3])}")
 
-                                        if source.get('reranked') is not None:
-                                            citation_parts.append(f"Reranked: {'✅ Yes' if source.get('reranked') else '❌ No'}")
+                                        if source.get('module') and source.get('module') != 'N/A':
+                                            neo4j_lines.append(f"- Module: {source.get('module')}")
 
-                                        if source.get('start_line') and source.get('start_line') != 'N/A':
-                                            citation_parts.append(f"Line {source.get('start_line')}-{source.get('end_line', 'N/A')}")
+                                        if source.get('node_type') and source.get('node_type') != 'N/A':
+                                            neo4j_lines.append(f"- Type: {source.get('node_type')}")
 
-                                        if source.get('preview') and source.get('preview') != 'N/A':
-                                            preview = source.get('preview')[:80] + "..." if len(source.get('preview', '')) > 80 else source.get('preview')
-                                            citation_parts.append(f"Preview: {preview}")
-
-                                        st.markdown(" | ".join(citation_parts))
-                                    
-                                    with col2:
-                                        if st.button("📂 View Code", key=f"pinecone_view_{j}", use_container_width=True):
-                                            st.session_state[f"show_pinecone_{j}"] = True
-                                
-                                # Pinecone code popup modal
-                                if st.session_state.get(f"show_pinecone_{j}"):
-                                    st.markdown("---")
-                                    col_code, col_close = st.columns([0.95, 0.05])
-                                    with col_code:
-                                        st.write(f"**📄 {source.get('file_name', 'unknown')}** (Lines {source.get('lines', 'N/A')})")
-                                    with col_close:
-                                        if st.button("✕", key=f"pinecone_close_{j}"):
-                                            st.session_state[f"show_pinecone_{j}"] = False
-                                    
-                                    st.code(source.get('content', source.get('preview', 'Content not available')), language=source.get('language', 'python'))
-                                    st.markdown("---")
+                                        st.markdown("\n".join(neo4j_lines))
                         
-                        # NEO4J RELATIONSHIPS
-                        if neo4j_sources:
-                            st.write("**🔗 Neo4j Entity Relationships (Graph)**")
-                            for k, source in enumerate(neo4j_sources, 1):
-                                with st.container(border=True):
-                                    # Build Neo4j citation, omitting empty/N/A values
-                                    neo4j_lines = [f"**{source.get('entity_type', 'Unknown')}**: {source.get('entity', 'unknown')}"]
-
-                                    deps = source.get('dependencies', [])
-                                    if deps and deps != ['None'] and all(d != 'None' and d != 'N/A' for d in deps):
-                                        neo4j_lines.append(f"- Dependencies: {', '.join(deps[:3])}")
-
-                                    used_by = source.get('used_by', [])
-                                    if used_by and used_by != ['Not used'] and all(u != 'Not used' and u != 'N/A' for u in used_by):
-                                        neo4j_lines.append(f"- Used by: {', '.join(used_by[:3])}")
-
-                                    if source.get('module') and source.get('module') != 'N/A':
-                                        neo4j_lines.append(f"- Module: {source.get('module')}")
-
-                                    if source.get('node_type') and source.get('node_type') != 'N/A':
-                                        neo4j_lines.append(f"- Type: {source.get('node_type')}")
-
-                                    st.markdown("\n".join(neo4j_lines))
-                    
-                    if agents:
-                        agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents])
-                        st.markdown(agent_str, unsafe_allow_html=True)
+                        if agents:
+                            agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents])
+                            st.markdown(agent_str, unsafe_allow_html=True)
     
     st.divider()
     
@@ -723,7 +760,8 @@ with tab_chat:
                         thinking_process = data.get("thinking_process", [])
                         tools_used = data.get("tools_used", [])
                         iterations = data.get("iterations", 0)
-                        
+                        retrieved_context = data.get("retrieved_context", [])
+
                         # Display answer with streaming effect
                         message_placeholder = st.empty()
                         displayed_text = ""
@@ -739,6 +777,45 @@ with tab_chat:
                             for i, step in enumerate(thinking_process, 1):
                                 st.caption(f"**Step {i}:** {step[:200]}...")
                         
+                        # SHOW RETRIEVED CONTEXT (SOURCES)
+                        if retrieved_context:
+                            embeddings_sources = [s for s in retrieved_context if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
+                            neo4j_sources = [s for s in retrieved_context if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                            
+                            if embeddings_sources:
+                                st.write("### 📝 Pinecone Code Chunks (Semantic Search)")
+                                for idx, source in enumerate(embeddings_sources, 1):
+                                    with st.container(border=True):
+                                        col1, col2 = st.columns([0.8, 0.2])
+                                        
+                                        with col1:
+                                            st.markdown(f"""
+**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
+- **Lines:** {source.get('lines', 'N/A')}
+- **Relevance:** {source.get('relevance', 'N/A')}
+- **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
+                                            """)
+                                            st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
+                                        
+                                        with col2:
+                                            view_key = f"agentic_view_{idx}_{time.time()}"
+                                            if st.button("📂 View Code", key=view_key):
+                                                st.session_state[f"show_{view_key}"] = True
+                                            
+                                            if st.session_state.get(f"show_{view_key}"):
+                                                st.code(source.get('content', source.get('preview', 'N/A')), language=source.get('language', 'python'))
+                            
+                            if neo4j_sources:
+                                st.write("### 🔗 Neo4j Entity Relationships (Graph)")
+                                for idx, source in enumerate(neo4j_sources, 1):
+                                    with st.container(border=True):
+                                        st.markdown(f"""
+**{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
+- **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
+- **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
+- **Module:** {source.get('module', 'N/A')}
+                                        """)
+                        
                         # SHOW TOOLS USED
                         if tools_used:
                             st.write("**🔧 Tools Used:**")
@@ -750,7 +827,8 @@ with tab_chat:
                             "content": answer,
                             "thinking_process": thinking_process,
                             "tools_used": tools_used,
-                            "iterations": iterations
+                            "iterations": iterations,
+                            "retrieved_context": retrieved_context
                         })
                         st.rerun()
                     else:
