@@ -5,9 +5,9 @@ Handles entity extraction and relationship building.
 """
 
 from typing import Dict, List, Any
-from ...shared.ast_parser import ASTParser
-from ...shared.relationship_builder import RelationshipBuilder
-from ...shared.logger import get_logger
+from ....shared.ast_parser import ASTParser
+from ....shared.relationship_builder import RelationshipBuilder
+from ....shared.logger import get_logger
 
 logger = get_logger(__name__)
 

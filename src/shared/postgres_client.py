@@ -57,7 +57,7 @@ class TurnModel(Base):
     turn_number = Column(Integer, nullable=False)
     role = Column(String(50), nullable=False)  # 'user' or 'assistant'
     content = Column(Text, nullable=False)
-    turn_meta = Column(JSON, default={})
+    turn_data = Column(JSONB, default={})
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     
     # Relationships
@@ -228,7 +228,7 @@ class PostgreSQLClientManager:
                     turn_number=turn_number,
                     role=role,
                     content=content,
-            turn_meta=metadata or {}
+                    turn_data=metadata or {}
                 )
                 session.add(db_turn)
                 await session.commit()
@@ -357,7 +357,7 @@ class PostgreSQLClientManager:
             turn_number=db_turn.turn_number,
             role=db_turn.role,
             content=db_turn.content,
-            turn_meta=db_turn.turn_meta,
+            metadata=db_turn.turn_data,
             created_at=db_turn.created_at
         )
     

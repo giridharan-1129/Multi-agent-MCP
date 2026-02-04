@@ -6,6 +6,7 @@ Streamlit calls Orchestrator directly. Gateway only provides:
 - Health monitoring
 - CORS handling
 """
+from fastapi import FastAPI, HTTPException
 
 import os
 from contextlib import asynccontextmanager
@@ -14,6 +15,7 @@ from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+from .models import ChatRequest, ChatResponse
 
 from .routes import health
 from ..shared.logger import get_logger
@@ -129,18 +131,71 @@ async def gateway_health():
         }
 
 
+@app.post("/api/chat", response_model=ChatResponse)
+async def chat(request: ChatRequest) -> ChatResponse:
+    """
+    Main chat endpoint - receives query, routes to Orchestrator.
+    
+    Flow: Gateway → Orchestrator → Agents → Synthesis → Response
+    
+    Args:
+        request: ChatRequest with query and optional session_id
+        
+    Returns:
+        ChatResponse with synthesized answer and agents used
+    """
+    try:
+        logger.info(f"→ POST /api/chat: {request.query[:100]}")
+        
+        # Forward to Orchestrator's /execute endpoint
+        response = await http_client.post(
+            f"{orchestrator_url}/execute",
+            json={
+                "query": request.query,
+                "session_id": request.session_id
+            },
+            timeout=60.0
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Orchestrator error: {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        
+        result = response.json()
+        logger.info(f"← POST /api/chat: success - {len(result.get('response', ''))} chars")
+        
+        # Map orchestrator response to ChatResponse model
+        return ChatResponse(
+            success=result.get("success", False),
+            response=result.get("response", "No response generated"),
+            agents_used=result.get("agents_used", []),
+            intent=result.get("intent"),
+            entities_found=result.get("entities_found", []),
+            session_id=result.get("session_id"),
+            error=result.get("error")
+        )
+        
+    except httpx.TimeoutException:
+        logger.error("Orchestrator timeout")
+        raise HTTPException(status_code=504, detail="Orchestrator request timed out")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Chat error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @app.get("/api")
 async def api_info():
     """Service URLs and configuration."""
     return {
         "version": "2.0.0",
-        "architecture": "Streamlit → Orchestrator (direct calls, no Gateway proxy)",
-        "services": {
-            "orchestrator": orchestrator_url,
-            "memory": os.getenv("MEMORY_SERVICE_URL", "http://localhost:8005"),
-            "graph_query": os.getenv("GRAPH_QUERY_SERVICE_URL", "http://localhost:8003"),
-            "code_analyst": os.getenv("CODE_ANALYST_SERVICE_URL", "http://localhost:8004"),
-            "indexer": os.getenv("INDEXER_SERVICE_URL", "http://localhost:8002")
+        "architecture": "Gateway → Orchestrator flow",
+        "endpoints": {
+            "POST /api/chat": "Send query",
+            "GET /health": "Health check",
+            "GET /api": "This info"
         }
     }
 

@@ -9,10 +9,11 @@ Handles:
 """
 
 from typing import Any, Dict
-from ...shared.mcp_server import ToolResult
-from ...shared.pinecone_embeddings_service import PineconeEmbeddingsService, CodeChunker
-from ...shared.repo_downloader import RepositoryDownloader
-from ...shared.logger import get_logger
+from ....shared.mcp_server import ToolResult
+
+from ....shared.pinecone_embeddings_service import PineconeEmbeddingsService, CodeChunker
+from ....shared.repo_downloader import RepositoryDownloader
+from ....shared.logger import get_logger
 
 logger = get_logger(__name__)
 

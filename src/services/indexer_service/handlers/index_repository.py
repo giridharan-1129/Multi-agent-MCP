@@ -8,12 +8,13 @@ Handles:
 """
 
 from typing import Any, Dict
-from ...shared.mcp_server import ToolResult
-from ...shared.neo4j_service import Neo4jService
-from ...shared.ast_parser import ASTParser
-from ...shared.repo_downloader import RepositoryDownloader
-from ...shared.relationship_builder import RelationshipBuilder
-from ...shared.logger import get_logger
+from ....shared.mcp_server import ToolResult
+
+from ....shared.neo4j_service import Neo4jService
+from ....shared.ast_parser import ASTParser
+from ....shared.repo_downloader import RepositoryDownloader
+from ....shared.relationship_builder import RelationshipBuilder
+from ....shared.logger import get_logger
 from .ast_utils import parse_and_extract_entities, count_entity_types
 
 logger = get_logger(__name__)

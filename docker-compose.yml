@@ -72,9 +72,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.memory
-      args:
-        SERVICE_PATH: src.services.memory_service.main
-        SERVICE_PORT: 8005
     container_name: memory_service
     ports:
     - 8005:8005
@@ -106,9 +103,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.graph
-      args:
-        SERVICE_PATH: src.services.graph_query_service.main
-        SERVICE_PORT: 8003
     container_name: graph_query_service
     ports:
     - 8003:8003
@@ -139,9 +133,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.code
-      args:
-        SERVICE_PATH: src.services.code_analyst_service.main
-        SERVICE_PORT: 8004
     container_name: code_analyst_service
     ports:
     - 8004:8004
@@ -172,9 +163,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.indexer
-      args:
-        SERVICE_PATH: src.services.indexer_service.main
-        SERVICE_PORT: 8002
     container_name: indexer_service
     ports:
     - 8002:8002
@@ -210,9 +198,6 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.orchestrator
-      args:
-        SERVICE_PATH: src.services.orchestrator_service.main
-        SERVICE_PORT: 8001
     container_name: orchestrator_service
     ports:
     - 8001:8001

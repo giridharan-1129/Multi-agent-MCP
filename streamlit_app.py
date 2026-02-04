@@ -1,29 +1,55 @@
-"""
-Streamlit UI for Agentic Codebase Chat System.
-
-Multi-agent repository analysis with RAG, visualization, and tools.
-"""
-
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 import time
 import os
-
-import re
 import sys
 
 sys.path.insert(0, '/mnt/project')
 
 from mermaid_renderer import render_mermaid_diagram
 from relationship_mappings import get_cypher_query_templates, get_query_description
-from network_graph_renderer import render_network_graph, extract_nodes_and_edges
-# Gateway is the primary entry point
-# These are for reference only (Gateway handles routing)
+
+GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8000")
 INDEXER_SERVICE = os.getenv("INDEXER_SERVICE_URL", "http://indexer_service:8002")
-GRAPH_QUERY_SERVICE = os.getenv("GRAPH_QUERY_SERVICE_URL", "http://graph_query_service:8003")
 ORCHESTRATOR_SERVICE = os.getenv("ORCHESTRATOR_SERVICE_URL", "http://orchestrator_service:8001")
-REFRESH_INTERVAL = 3  # seconds
+
+# ============================================================================
+# CACHED API CALLS (Only on page reload, not on reruns)
+# ============================================================================
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_neo4j_stats():
+    """Fetch Neo4j statistics - cached and only on page reload."""
+    try:
+        res = requests.post(
+            f"{GATEWAY_URL}/api/chat",
+            json={"query": "What are the Neo4j database statistics?"},
+            timeout=10
+        )
+        if res.ok:
+            data = res.json()
+            if data.get("success"):
+                return {"success": True, "response": data.get("response", "")}
+    except Exception as e:
+        pass
+    return {"success": False, "response": f"Stats unavailable: {str(e)[:50]}"}
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def get_pinecone_stats():
+    """Fetch Pinecone statistics - cached and only on page reload."""
+    try:
+        res = requests.post(
+            f"{GATEWAY_URL}/api/chat",
+            json={"query": "What are the Pinecone vector database statistics?"},
+            timeout=10
+        )
+        if res.ok:
+            data = res.json()
+            if data.get("success"):
+                return {"success": True, "response": data.get("response", "")}
+    except Exception as e:
+        pass
+    return {"success": False, "response": f"Stats unavailable: {str(e)[:50]}"}
 
 # Page config
 st.set_page_config(
@@ -73,24 +99,6 @@ st.markdown("""
 # HELPER FUNCTIONS
 # ============================================================================
 
-# ============================================================================
-# INITIALIZE SESSION STATE
-# ============================================================================
-if "session_id" not in st.session_state:
-    st.session_state.session_id = None
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "last_auto_refresh" not in st.session_state:
-    st.session_state.last_auto_refresh = 0
-if "db_stats" not in st.session_state:
-    st.session_state.db_stats = {
-        "Package": 0,
-        "File": 0,
-        "Class": 0,
-        "Function": 0,
-        "Parameter": 0,
-        "Type": 0,
-    }
 if "indexing_active" not in st.session_state:
     st.session_state.indexing_active = False
 if "embedding_active" not in st.session_state:
@@ -99,15 +107,12 @@ if "embeddings_created" not in st.session_state:
     st.session_state.embeddings_created = False
 if "last_repo_url" not in st.session_state:
     st.session_state.last_repo_url = None
-if "current_job_id" not in st.session_state:
-    st.session_state.current_job_id = None
-# Pinecone chunk popup states
-for i in range(1, 100):
-    if f"show_chunk_{i}" not in st.session_state:
-        st.session_state[f"show_chunk_{i}"] = False
-    if f"show_pinecone_{i}" not in st.session_state:
-        st.session_state[f"show_pinecone_{i}"] = False
-
+if "agentic_history" not in st.session_state:
+    st.session_state.agentic_history = {}
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "session_id" not in st.session_state:
+    st.session_state.session_id = None
 
 # ============================================================================
 # TABS
@@ -157,619 +162,275 @@ with tab_chat:
             st.rerun()
     
     st.divider()
-    
-    # Neo4j Stats
-    st.subheader("📊 Neo4j Stats")
-    try:
-        res = requests.post(
-            f"{ORCHESTRATOR_SERVICE}/execute",
-            json={"query": "Give me the statistics for our Neo4j database"},
-            timeout=10
-        )
-        if res.ok:
-            data = res.json()
-            if data.get("success"):
-                stats = data.get('data', {}).get('statistics', {})
-                nodes = stats.get('nodes', {})
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Classes", nodes.get("Class", 0))
-                with col2:
-                    st.metric("Functions", nodes.get("Function", 0))
-                with col3:
-                    st.metric("Files", nodes.get("File", 0))
-    except Exception as e:
-        st.caption(f"Neo4j stats unavailable: {str(e)[:50]}")
-    
-    st.divider()
-    
-    # Pinecone Stats
-    st.subheader("⚡ Pinecone Embeddings")
-    try:
-        res = requests.post(
-            f"{ORCHESTRATOR_SERVICE}/execute",
-            json={"query": "Give me the statistics for our Pinecone vector database"},
-            timeout=10
-        )
-        if res.ok:
-            data = res.json()
-            if data.get("success"):
-                stats = data.get('data', {}).get('statistics', {})
-                st.metric("Vectors Stored", stats.get("total_vectors", 0))
-                st.metric("Dimension", stats.get("dimension", 1536))
-                st.caption(f"Index: {stats.get('index_name', 'code-search')}")
-            else:
-                st.caption("Pinecone not configured")
-    except Exception as e:
-        st.caption(f"Pinecone stats unavailable: {str(e)[:50]}")  
-
-# Show indexing progress if active
-# Show indexing progress if active
-if st.session_state.get("indexing_active", False):
-    st.markdown("### 📦 Indexing Progress")
-    
-    progress_placeholder = st.empty()
-    status_container = st.container()
-    
-    try:
-        index_url = st.session_state.get("last_repo_url")
-        
-        if index_url:
-            with progress_placeholder:
-                st.progress(25, text="Sending indexing request...")
-            
-            with status_container:
-                with st.spinner("Indexing repository to Neo4j..."):
-                    # Natural language request to Orchestrator
-                    index_res = requests.post(
-                        f"{ORCHESTRATOR_SERVICE}/execute",
-                        json={
-                            "tool_name": "index_repository",
-                            "tool_input": {
-                                "repo_url": index_url,
-                                "branch": "main"
-                            }
-                        },
-                        timeout=300
-                    )
-            
-            if index_res.ok:
-                index_data = index_res.json()
-                
-                with progress_placeholder:
-                    st.progress(100, text="Indexing Complete!")
-                
-                with status_container:
-                    if index_data.get("success"):
-                        st.success("✅ Repository Indexed Successfully!")
-                        
-                        stats = index_data.get('data', {}).get('statistics', {})
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Files Indexed", stats.get('files_indexed', 0))
-                        with col2:
-                            st.metric("Classes Found", stats.get('classes', 0))
-                        with col3:
-                            st.metric("Functions Found", stats.get('functions', 0))
-                        
-                        st.session_state.indexing_active = False
-                        st.session_state.embeddings_created = True
-                        time.sleep(2)
-                        st.rerun()
-                    else:
-                        st.error(f"⚠️ Indexing failed: {index_data.get('error', 'Unknown error')}")
-                        st.session_state.indexing_active = False
-            else:
-                with status_container:
-                    st.error(f"⚠️ Indexing failed: {index_res.text}")
-                st.session_state.indexing_active = False
-                
-    except requests.exceptions.Timeout:
-        with status_container:
-            st.error("⏱️ Indexing timeout - large repository")
-        st.session_state.indexing_active = False
-    except Exception as e:
-        with status_container:
-            st.error(f"❌ Error: {str(e)}")
-        st.session_state.indexing_active = False
-        
-        if refresh_status:
-            st.rerun()
-        
-        st.divider()
-        
-        # DATABASE STATS - Neo4j + Pinecone (both from Indexer via Orchestrator)
-        st.subheader("📊 Database Statistics")
+    with st.sidebar:
+        # Neo4j Stats
+        st.subheader("📊 Neo4j Stats")
         try:
             res = requests.post(
-                    f"{ORCHESTRATOR_SERVICE}/execute",
-                    json={},
-                    timeout=10
-                )
+                f"{GATEWAY_URL}/api/chat",
+                json={"query": "What are the Neo4j database statistics?"},
+                timeout=10
+            )
             if res.ok:
-                tool_result = res.json()
-                if tool_result.get("success"):
-                    stats = tool_result.get('data', {}).get('statistics', {})
-                    
-                    # NEO4J STATS
-                    nodes = stats.get('nodes', {})
-                    st.session_state.db_stats = {
-                        "Package": nodes.get("Package", 0),
-                        "File": nodes.get("File", 0),
-                        "Class": nodes.get("Class", 0),
-                        "Function": nodes.get("Function", 0),
-                        "Parameter": nodes.get("Parameter", 0),
-                        "Type": nodes.get("Type", 0),
-                    }
-                    
-                    st.write("**🔗 Neo4j Knowledge Graph**")
+                data = res.json()
+                if data.get("success"):
+                    response = data.get("response", "")
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("📦 Packages", st.session_state.db_stats["Package"])
-                        st.metric("📄 Files", st.session_state.db_stats["File"])
+                        st.metric("Classes", "N/A")
                     with col2:
-                        st.metric("🏗️ Classes", st.session_state.db_stats["Class"])
-                        st.metric("⚙️ Functions", st.session_state.db_stats["Function"])
+                        st.metric("Functions", "N/A")
                     with col3:
-                        st.metric("📝 Parameters", st.session_state.db_stats["Parameter"])
-                        st.metric("🔤 Types", st.session_state.db_stats["Type"])
-                    
-                    # PINECONE STATS
-                    pinecone_stats = stats.get('pinecone', {})
-                    if pinecone_stats:
-                        st.write("**⚡ Pinecone Vector Embeddings**")
-                        col4, col5 = st.columns(2)
-                        with col4:
-                            st.metric("📦 Code Chunks", pinecone_stats.get("chunks_total", 0))
-                            st.caption(f"Model: {pinecone_stats.get('embedding_model', 'N/A')}")
-                        with col5:
-                            st.metric("🧬 Total Vectors", pinecone_stats.get("total_vectors", 0))
-                            st.caption(f"Index: {pinecone_stats.get('index_name', 'N/A')}")
-                    else:
-                        st.info("💡 Pinecone not configured (Neo4j graph search available)")
-                else:
-                    st.warning(f"❌ {tool_result.get('error', 'Could not fetch stats')}")
+                        st.metric("Files", "N/A")
+                    st.caption("Stats available via Database Statistics section below")
         except Exception as e:
-            st.warning(f"Could not fetch database stats: {str(e)[:50]}")
+            st.caption(f"Neo4j stats unavailable: {str(e)[:50]}")
+        
         st.divider()
         
-        # PINECONE EMBEDDINGS STATS
-        st.subheader("⚡ Vector Embeddings (Pinecone)")
+        # Pinecone Stats
+        st.subheader("⚡ Pinecone Embeddings")
+        try:
+            res = requests.post(
+                f"{GATEWAY_URL}/api/chat",
+                json={"query": "What are the Pinecone vector database statistics?"},
+                timeout=10
+            )
+            if res.ok:
+                data = res.json()
+                if data.get("success"):
+                    response = data.get("response", "")
+                    st.metric("Vectors Stored", "N/A")
+                    st.metric("Dimension", "1536")
+                    st.caption("Index: code-search")
+                    st.caption("Stats available via Pinecone Embeddings section below")
+                else:
+                    st.caption("Pinecone not configured")
+        except Exception as e:
+            st.caption(f"Pinecone stats unavailable: {str(e)[:50]}")  
+
+    if st.session_state.get("indexing_active", False):
+        st.markdown("### 📦 Indexing Progress")
+        
+        progress_placeholder = st.empty()
+        status_container = st.container()
         
         try:
-            pinecone_res = requests.get(f"{INDEXER_SERVICE}/embeddings/stats", timeout=10)
-            if pinecone_res.ok:
-                pinecone_data = pinecone_res.json()
-                
-                if pinecone_data.get("status") == "unavailable":
-                    st.warning(f"⚠️ {pinecone_data.get('message', 'Pinecone not configured')}")
-                    st.info(f"💡 {pinecone_data.get('fallback', 'Using Neo4j graph search')}")
-                    st.caption("**Setup:** Set PINECONE_API_KEY and COHERE_API_KEY environment variables to enable semantic search")
-                
-                elif pinecone_data.get("status") == "available":
-                    summary = pinecone_data.get("summary", {})
-                    stats = pinecone_data.get("stats", {})
-                    
-                    # Status indicator
-                    status_icon = "✅" if summary.get("chunks_total", 0) > 0 else "⏳"
-                    st.write(f"{status_icon} **Status:** {summary.get('status', 'Unknown')}")
-                    
-                    # Metrics
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric(
-                            "📦 Code Chunks",
-                            summary.get("chunks_total", 0)
-                        )
-                        st.caption(f"Model: {summary.get('embedding_model', 'N/A')}")
-                    
-                    with col2:
-                        st.metric(
-                            "🔄 Reranker",
-                            summary.get('reranker', 'N/A').split('(')[0]
-                        )
-                        st.caption(f"Index: {stats.get('index_name', 'N/A')}")
-                    
-                    # Detailed stats in expander
-                    with st.expander("📊 Detailed Stats"):
-                        st.write(f"**Total Vectors:** {stats.get('total_vectors', 0)}")
-                        st.write(f"**Dimension:** {stats.get('dimension', 0)}")
-                        st.write(f"**Metric:** {stats.get('metric', 'cosine')}")
-                        
-                        if stats.get('namespaces'):
-                            st.write("**Namespaces:**")
-                            for ns_name, ns_stats in stats.get('namespaces', {}).items():
-                                st.write(f"  • {ns_name}: {ns_stats.get('vector_count', 0)} vectors")
-                
-                elif pinecone_data.get("status") == "unavailable":
-                    st.warning(f"⚠️ {pinecone_data.get('message', 'Pinecone not configured')}")
-                    st.info(f"💡 {pinecone_data.get('fallback', 'Using Neo4j graph search')}")
-                
-                else:
-                    st.error(f"❌ {pinecone_data.get('error', 'Error fetching Pinecone stats')}")
-                    st.info("💡 Neo4j graph search still available")
-        
-        except requests.exceptions.Timeout:
-            st.warning("⏱️ Pinecone stats timeout")
-        except Exception as e:
-            st.warning(f"⚠️ Could not fetch Pinecone stats: {str(e)[:50]}")
-            st.caption("💡 Neo4j graph search available as fallback")
-        
-        st.divider()
-        
-        # DATABASE VERIFICATION
-        with st.expander(" Verify Database", expanded=False):
-            col1, col2 = st.columns(2)
+            index_url = st.session_state.get("last_repo_url")
             
-            with col1:
-                if st.button("Check DB Stats"):
-                    try:
-                        response = requests.post(
-                            f"{ORCHESTRATOR_SERVICE}/execute",
-                                    json={},
-                                    timeout=5
-                                )
-                        if response.ok:
-                            tool_result = response.json()
-                            neo4j_stats = tool_result.get('data', {}).get('statistics', {})
-                            
-                            st.write("**Database Stats:**")
-                            nodes = neo4j_stats.get("nodes", {})
-                            rels = neo4j_stats.get("relationships", {})
-
-                            if nodes:
-                                node_col, rel_col = st.columns(2)
-                                with node_col:
-                                    st.write("**Nodes:**")
-                                    for node_type, count in sorted(nodes.items()):
-                                        st.write(f"   {node_type}: {count}")
-                                
-                                with rel_col:
-                                    st.write("**Relationships:**")
-                                    for rel_type, count in sorted(rels.items()):
-                                        st.write(f"   {rel_type}: {count}")
-                            else:
-                                st.info("No nodes found. Index a repository first.")
-                    except Exception as e:
-                        st.error(f"Error: {str(e)}")
-    
-    # MAIN CHAT AREA
-    st.title("Agentic Codebase Chat")
-    
-    # MODE SELECTOR
-    col_mode1, col_mode2, col_spacer = st.columns([1, 1, 3])
-    with col_mode1:
-        chat_mode = st.radio(
-            "Chat Mode",
-            ["Agentic AI"],
-            horizontal=True,
-            key="chat_mode_selector"
-        )
-    
-
-    st.info("✨ **Agentic AI Mode**: GPT-4 autonomously reasons and chains tools. Shows thinking process.")
-
-    
-    st.markdown("### Conversation History")
-    
-    message_container = st.container()
-    with message_container:
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.write(msg["content"])
+            if index_url:
+                with progress_placeholder:
+                    st.progress(25, text="Sending indexing request...")
                 
-                if msg["role"] == "assistant":
-                    # AGENTIC AI MESSAGE
-                    if "thinking_process" in msg:
-                        thinking_steps = msg.get("thinking_process", [])
-                        tools_used = msg.get("tools_used", [])
-                        iterations = msg.get("iterations", 0)
-                        retrieved_context = msg.get("retrieved_context", [])
-                        
-                        st.divider()
-                        
-                        with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=False):
-                            for i, step in enumerate(thinking_steps, 1):
-                                st.caption(f"**Step {i}:** {step[:300]}...")
-                        
-                        # SHOW RETRIEVED CONTEXT FROM AGENTIC SEARCH
-                        if retrieved_context:
-                            embeddings_sources = [s for s in retrieved_context if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
-                            neo4j_sources = [s for s in retrieved_context if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                with status_container:
+                    with st.spinner("Indexing repository to Neo4j..."):
+                        index_res = requests.post(
+                            f"{GATEWAY_URL}/api/chat",
+                            json={"query": f"Index this repository: {index_url}"},
+                            timeout=300
+                        )
+                
+                if index_res.ok:
+                    index_data = index_res.json()
+                    
+                    with progress_placeholder:
+                        st.progress(100, text="Indexing Complete!")
+                    
+                    with status_container:
+                        if index_data.get("success"):
+                            st.success("✅ Repository Indexed Successfully!")
+                            st.write(f"**Response:** {index_data.get('response', 'Indexing complete')}")
                             
-                            if embeddings_sources:
-                                st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
-                                for j, source in enumerate(embeddings_sources, 1):
-                                    with st.container(border=True):
-                                        col1, col2 = st.columns([0.85, 0.15])
-                                        
-                                        with col1:
-                                            st.markdown(f"""
+                            st.session_state.indexing_active = False
+                            st.session_state.embeddings_created = True
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error(f"⚠️ Indexing failed: {index_data.get('error', 'Unknown error')}")
+                            st.session_state.indexing_active = False
+                else:
+                    with status_container:
+                        st.error(f"⚠️ Indexing failed: {index_res.text}")
+                    st.session_state.indexing_active = False
+                    
+        except requests.exceptions.Timeout:
+            with status_container:
+                st.error("⏱️ Indexing timeout - large repository")
+            st.session_state.indexing_active = False
+        except Exception as e:
+            with status_container:
+                st.error(f"❌ Error: {str(e)}")
+            st.session_state.indexing_active = False
+        
+        st.stop()  # ← CRITICAL: Stop execution here after indexing
+        
+
+
+# Main chat area - only renders when NOT indexing
+st.title("Agentic Codebase Chat")
+
+# MODE SELECTOR
+col_mode1, col_mode2, col_spacer = st.columns([1, 1, 3])
+with col_mode1:
+    chat_mode = st.radio(
+        "Chat Mode",
+        ["Agentic AI"],
+        horizontal=True,
+        key="chat_mode_selector"
+    )
+
+st.info("✨ **Agentic AI Mode**: GPT-4 autonomously reasons and chains tools. Shows thinking process.")
+
+st.markdown("### Conversation History")
+
+message_container = st.container()
+with message_container:
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            
+            if msg["role"] == "assistant":
+                # AGENTIC AI MESSAGE
+                if "thinking_process" in msg:
+                    thinking_steps = msg.get("thinking_process", [])
+                    tools_used = msg.get("tools_used", [])
+                    iterations = msg.get("iterations", 0)
+                    retrieved_context = msg.get("retrieved_context", [])
+                    
+                    st.divider()
+                    
+                    with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=False):
+                        for i, step in enumerate(thinking_steps, 1):
+                            st.caption(f"**Step {i}:** {step[:300]}...")
+                    
+                    # SHOW RETRIEVED CONTEXT FROM AGENTIC SEARCH
+                    if retrieved_context:
+                        embeddings_sources = [s for s in retrieved_context if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
+                        neo4j_sources = [s for s in retrieved_context if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                        
+                        if embeddings_sources:
+                            st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
+                            for j, source in enumerate(embeddings_sources, 1):
+                                with st.container(border=True):
+                                    col1, col2 = st.columns([0.85, 0.15])
+                                    
+                                    with col1:
+                                        st.markdown(f"""
 **{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
 - **Lines:** {source.get('lines', 'N/A')}
 - **Relevance:** {source.get('relevance', 'N/A')}
 - **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
-                                            """)
-                                        
-                                        with col2:
-                                            if st.button("📂 View", key=f"agentic_history_view_{j}"):
-                                                st.session_state[f"show_agentic_history_{j}"] = True
+                                        """)
                                     
-                                    if st.session_state.get(f"show_agentic_history_{j}"):
-                                        st.code(source.get('content', 'N/A'), language=source.get('language', 'python'))
-                            
-                            if neo4j_sources:
-                                st.write("**🔗 Neo4j Entity Relationships (Graph)**")
-                                for k, source in enumerate(neo4j_sources, 1):
-                                    with st.container(border=True):
-                                        st.markdown(f"""
+                                    with col2:
+                                        if st.button("📂 View", key=f"agentic_history_view_{j}"):
+                                            st.session_state[f"show_agentic_history_{j}"] = True
+                                
+                                if st.session_state.get(f"show_agentic_history_{j}"):
+                                    st.code(source.get('content', 'N/A'), language=source.get('language', 'python'))
+                        
+                        if neo4j_sources:
+                            st.write("**🔗 Neo4j Entity Relationships (Graph)**")
+                            for k, source in enumerate(neo4j_sources, 1):
+                                with st.container(border=True):
+                                    st.markdown(f"""
 **{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
 - **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
 - **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
 - **Module:** {source.get('module', 'N/A')}
-                                        """)
-                        
-                        if tools_used:
-                            st.write("**🔧 Tools Used:**")
-                            tool_str = " ".join([f'<span class="agent-badge">{t}</span>' for t in tools_used])
-                            st.markdown(tool_str, unsafe_allow_html=True)
+                                    """)
                     
-                    # RAG MESSAGE
-                    else:
-                        sources = msg.get("sources", [])
-                        agents = msg.get("agents", [])
-                        
-                        if sources:
-                            # Separate pinecone and neo4j sources
-                            pinecone_sources = [s for s in sources if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
-                            neo4j_sources = [s for s in sources if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
-                            
-                            # PINECONE CHUNKS
-                            if pinecone_sources:
-                                st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
-                                for j, source in enumerate(pinecone_sources, 1):
-                                    with st.container(border=True):
-                                        col1, col2 = st.columns([0.85, 0.15])
-                                        
-                                        with col1:
-                                            # Build citation text, omitting N/A and None values
-                                            citation_parts = [f"**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}"]
+                    if tools_used:
+                        st.write("**🔧 Tools Used:**")
+                        tool_str = " ".join([f'<span class="agent-badge">{t}</span>' for t in tools_used])
+                        st.markdown(tool_str, unsafe_allow_html=True)
 
-                                            if source.get('lines') and source.get('lines') != 'N/A':
-                                                citation_parts.append(f"Lines {source.get('lines')}")
+st.divider()
 
-                                            if source.get('relevance_percent') and source.get('relevance_percent') != 'N/A':
-                                                citation_parts.append(f"Relevance: {source.get('relevance_percent')}")
+# CHAT INPUT
+query = st.chat_input("Ask about the codebase...")
 
-                                            if source.get('reranked') is not None:
-                                                citation_parts.append(f"Reranked: {'✅ Yes' if source.get('reranked') else '❌ No'}")
-
-                                            if source.get('start_line') and source.get('start_line') != 'N/A':
-                                                citation_parts.append(f"Line {source.get('start_line')}-{source.get('end_line', 'N/A')}")
-
-                                            if source.get('preview') and source.get('preview') != 'N/A':
-                                                preview = source.get('preview')[:80] + "..." if len(source.get('preview', '')) > 80 else source.get('preview')
-                                                citation_parts.append(f"Preview: {preview}")
-
-                                            st.markdown(" | ".join(citation_parts))
-                                        
-                                        with col2:
-                                            if st.button("📂 View Code", key=f"pinecone_view_{j}", use_container_width=True):
-                                                st.session_state[f"show_pinecone_{j}"] = True
-                                    
-                                    # Pinecone code popup modal
-                                    if st.session_state.get(f"show_pinecone_{j}"):
-                                        st.markdown("---")
-                                        col_code, col_close = st.columns([0.95, 0.05])
-                                        with col_code:
-                                            st.write(f"**📄 {source.get('file_name', 'unknown')}** (Lines {source.get('lines', 'N/A')})")
-                                        with col_close:
-                                            if st.button("✕", key=f"pinecone_close_{j}"):
-                                                st.session_state[f"show_pinecone_{j}"] = False
-                                        
-                                        st.code(source.get('content', source.get('preview', 'Content not available')), language=source.get('language', 'python'))
-                                        st.markdown("---")
-                            
-                            # NEO4J RELATIONSHIPS
-                            if neo4j_sources:
-                                st.write("**🔗 Neo4j Entity Relationships (Graph)**")
-                                for k, source in enumerate(neo4j_sources, 1):
-                                    with st.container(border=True):
-                                        # Build Neo4j citation, omitting empty/N/A values
-                                        neo4j_lines = [f"**{source.get('entity_type', 'Unknown')}**: {source.get('entity', 'unknown')}"]
-
-                                        deps = source.get('dependencies', [])
-                                        if deps and deps != ['None'] and all(d != 'None' and d != 'N/A' for d in deps):
-                                            neo4j_lines.append(f"- Dependencies: {', '.join(deps[:3])}")
-
-                                        used_by = source.get('used_by', [])
-                                        if used_by and used_by != ['Not used'] and all(u != 'Not used' and u != 'N/A' for u in used_by):
-                                            neo4j_lines.append(f"- Used by: {', '.join(used_by[:3])}")
-
-                                        if source.get('module') and source.get('module') != 'N/A':
-                                            neo4j_lines.append(f"- Module: {source.get('module')}")
-
-                                        if source.get('node_type') and source.get('node_type') != 'N/A':
-                                            neo4j_lines.append(f"- Type: {source.get('node_type')}")
-
-                                        st.markdown("\n".join(neo4j_lines))
-                        
-                        if agents:
-                            agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents])
-                            st.markdown(agent_str, unsafe_allow_html=True)
+if query:
+    with st.chat_message("user"):
+        st.write(query)
     
-    st.divider()
+    st.session_state.messages.append({"role": "user", "content": query})
     
-    # CHAT INPUT
-    query = st.chat_input("Ask about the codebase...")
-    
-    if query:
-        with st.chat_message("user"):
-            st.write(query)
-        
-        st.session_state.messages.append({"role": "user", "content": query})
-        
-        try:
-            with st.chat_message("assistant"):
-                # Agentic AI Mode - calls Orchestrator which chains tools
-                with st.spinner("🧠 Orchestrator is analyzing and chaining tools..."):
-                    payload = {
-                            "query": query
-
-                    }
-                    
-                    res = requests.post(
-                        f"{ORCHESTRATOR_SERVICE}/execute",
-                        json=payload,
-                        timeout=120  # Agentic can take longer
-                    )
+    try:
+        with st.chat_message("assistant"):
+            # Agentic AI Mode
+            with st.spinner("🧠 Orchestrator is analyzing and chaining tools..."):
+                payload = {
+                    "query": query,
+                    "session_id": st.session_state.session_id
+                }
                 
-                if res.ok:
-                    data = res.json()
+                res = requests.post(
+                    f"{GATEWAY_URL}/api/chat",
+                    json=payload,
+                    timeout=120
+                )
+            
+            if res.ok:
+                data = res.json()
+                
+                if data.get("success"):
+                    answer = data.get("response", "No response generated")
+                    intent = data.get("intent", "search")
+                    entities_found = data.get("entities_found", [])
+                    agents_used = data.get("agents_used", [])
+                    session_id = data.get("session_id")
                     
-                    # Handle success/error wrapper from tool execution
-                    if data.get("success"):
-                        result_data = data.get("data", {})
-                        
-                        # For analyze_query, we get intent and entities
-                        intent = result_data.get("intent", "search")
-                        entities = result_data.get("entities", [])
-                        
-                        # Now route to appropriate agents based on intent
-                        with st.spinner("🔀 Routing to agents..."):
-                            route_payload = {
-                                    "query": query,
-                                    "intent": intent
-                                
-                            }
-                            
-                            route_res = requests.post(
-                                f"{ORCHESTRATOR_SERVICE}/execute",
-                                json=route_payload,
-                                timeout=30
-                            )
-                        
-                        if route_res.ok:
-                            route_data = route_res.json()
-                            
-                            if route_data.get("success"):
-                                route_result = route_data.get("data", {})
-                                recommended_agents = route_result.get("recommended_agents", [])
-                                
-                                # Call each agent tool
-                                all_agent_results = []
-                                thinking_steps = [
-                                    f"Query Intent: {intent}",
-                                    f"Identified entities: {', '.join(entities) if entities else 'None'}",
-                                    f"Routing to agents: {', '.join(recommended_agents)}"
-                                ]
-                                
-                                with st.spinner("🔍 Querying agents..."):
-                                    for agent in recommended_agents:
-                                        try:
-                                            agent_payload = {
-                                                    "agent": agent,
-                                                    "tool": "find_entity" if agent == "graph_query" else "analyze_function",
-                                                    "input": {
-                                                        "name": entities[0] if entities else query
-                                                    }
-                                                }
-                                            
-                                            agent_res = requests.post(
-                                                f"{ORCHESTRATOR_SERVICE}/execute",
-                                                json=agent_payload,
-                                                timeout=30
-                                            )
-                                            
-                                            if agent_res.ok:
-                                                agent_data = agent_res.json()
-                                                if agent_data.get("success"):
-                                                    all_agent_results.append({
-                                                        "agent": agent,
-                                                        "data": agent_data.get("data", {})
-                                                    })
-                                                    thinking_steps.append(f"✅ {agent}: completed")
-                                                else:
-                                                    thinking_steps.append(f"❌ {agent}: {agent_data.get('error', 'failed')}")
-                                        except Exception as e:
-                                            thinking_steps.append(f"❌ {agent}: {str(e)}")
-                                
-                                # Synthesize final response
-                                with st.spinner("🧠 Synthesizing response..."):
-                                    synthesis_payload = {
-                                            "agent_results": all_agent_results,
-                                            "original_query": query
-                                        }
-                                    
-                                    synthesis_res = requests.post(
-                                        f"{ORCHESTRATOR_SERVICE}/execute",
-                                        json=synthesis_payload,
-                                        timeout=30
-                                    )
-                                
-                                if synthesis_res.ok:
-                                    synthesis_data = synthesis_res.json()
-                                    
-                                    if synthesis_data.get("success"):
-                                        synthesis_result = synthesis_data.get("data", {})
-                                        answer = synthesis_result.get("synthesis", "No response generated")
-                                        
-                                        # Display answer with streaming effect
-                                        message_placeholder = st.empty()
-                                        displayed_text = ""
-                                        for char in answer:
-                                            displayed_text += char
-                                            message_placeholder.write(displayed_text)
-                                            time.sleep(0.01)
-                                        
-                                        st.divider()
-                                        
-                                        # SHOW THINKING PROCESS
-                                        with st.expander(f"🧠 Thinking Process ({len(thinking_steps)} steps)", expanded=False):
-                                            for i, step in enumerate(thinking_steps, 1):
-                                                st.caption(f"**Step {i}:** {step}")
-                                        
-                                        # SHOW AGENT RESULTS
-                                        if all_agent_results:
-                                            st.write("**🔧 Agent Results:**")
-                                            for result in all_agent_results:
-                                                agent_name = result.get("agent", "Unknown")
-                                                agent_data = result.get("data", {})
-                                                st.write(f"**{agent_name.title()}:** {agent_data}")
-                                        
-                                        # SHOW TOOLS USED
-                                        st.write("**🔧 Tools Used:**")
-                                        tool_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in recommended_agents])
-                                        st.markdown(tool_str, unsafe_allow_html=True)
-                                        
-                                        st.session_state.messages.append({
-                                            "role": "assistant",
-                                            "content": answer,
-                                            "thinking_process": thinking_steps,
-                                            "tools_used": recommended_agents,
-                                            "iterations": len(thinking_steps),
-                                            "retrieved_context": []
-                                        })
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Synthesis failed: {synthesis_data.get('error', 'Unknown error')}")
-                                else:
-                                    st.error(f"Synthesis request failed: {synthesis_res.text}")
-                            else:
-                                st.error(f"Routing failed: {route_data.get('error', 'Unknown error')}")
-                        else:
-                            st.error(f"Routing request failed: {route_res.text}")
-                    else:
-                        st.error(f"Query analysis failed: {data.get('error', 'Unknown error')}")
-                        st.session_state.messages.append({"role": "assistant", "content": "Query analysis failed"})
-                        st.rerun()
+                    if session_id:
+                        st.session_state.session_id = session_id
+                    
+                    # Display answer with streaming effect
+                    message_placeholder = st.empty()
+                    displayed_text = ""
+                    for char in answer:
+                        displayed_text += char
+                        message_placeholder.write(displayed_text)
+                        time.sleep(0.01)
+                    
+                    st.divider()
+                    
+                    # SHOW THINKING PROCESS
+                    thinking_steps = [
+                        f"Intent: {intent}",
+                        f"Entities: {', '.join(entities_found) if entities_found else 'None'}",
+                        f"Agents routed: {', '.join(agents_used) if agents_used else 'None'}"
+                    ]
+                    
+                    with st.expander(f"🧠 Thinking Process ({len(thinking_steps)} steps)", expanded=False):
+                        for i, step in enumerate(thinking_steps, 1):
+                            st.caption(f"**Step {i}:** {step}")
+                    
+                    # SHOW TOOLS USED
+                    if agents_used:
+                        st.write("**🔧 Agents Used:**")
+                        tool_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents_used])
+                        st.markdown(tool_str, unsafe_allow_html=True)
+                    
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "thinking_process": thinking_steps,
+                        "tools_used": agents_used,
+                        "iterations": len(thinking_steps),
+                        "retrieved_context": []
+                    })
+                    st.rerun()
                 else:
-                    st.error(f"Error: {res.text}")
-        
-        except requests.exceptions.Timeout:
-            st.error("⏱️ Request timeout")
-        except Exception as e:
-            st.error(f"Error: {str(e)}")
+                    st.error(f"Error: {data.get('error', 'Unknown error')}")
+                    st.session_state.messages.append({"role": "assistant", "content": f"Error: {data.get('error', 'Unknown error')}"})
+                    st.rerun()
+            else:
+                st.error(f"Error: {res.text}")
+    
+    except requests.exceptions.Timeout:
+        st.error("⏱️ Request timeout")
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
 
 
 # ============================================================================
@@ -793,15 +454,13 @@ with tab_graph:
             LIMIT 5000
             """
             response = requests.post(
-                f"{ORCHESTRATOR_SERVICE}/execute",
-                json={
-                    "tool_name": "execute_query",
-                    "tool_input": {"query": cypher}
-                },
+                f"{GATEWAY_URL}/api/chat",
+                json={"query": f"Execute this Cypher query: {cypher}"},
                 timeout=10
             )
             if response.ok:
-                results = response.json().get("result", [])
+                data = response.json()
+                results = data.get("data", {}).get("query_results", []) if data.get("success") else []
                 entities_dict = {}
                 for r in results:
                     node_type = r.get("node_type", "Unknown")
@@ -914,19 +573,15 @@ with tab_graph:
                     for idx, query in enumerate(cypher_queries, 1):
                         try:
                             cypher_exec_response = requests.post(
-                                f"{ORCHESTRATOR_SERVICE}/execute",
+                                f"{GATEWAY_URL}/api/chat",
                                 json={
-                                    "tool_name": "execute_query",
-                                    "tool_input": {
-                                            "query": query,
-                                            "parameters": {"name": entity_name}
-                                        }
-                                    },
-                                    timeout=20
-                                )
+                                    "query": f"Execute Cypher query for {entity_name}: {query}"
+                                },
+                                timeout=20
+                            )
                             if cypher_exec_response.ok:
                                 exec_data = cypher_exec_response.json()
-                                results = exec_data.get("result", [])
+                                results = exec_data.get("data", {}).get("query_results", []) if exec_data.get("success") else []
                                 all_results.extend(results)
                                 query_status_list.append({
                                     "Query": idx,
@@ -993,21 +648,16 @@ with tab_graph:
                 try:
                     # Call your existing mermaid endpoint
                     mermaid_response = requests.post(
-                        f"{ORCHESTRATOR_SERVICE}/execute",
+                        f"{GATEWAY_URL}/api/chat",
                         json={
-                            "tool_name": "generate_mermaid",
-                            "tool_input": {
-                                "query_results": all_results,
-                                "entity_name": entity_name,
-                                "entity_type": selected_type
-                            }
+                            "query": f"Generate Mermaid diagram for {selected_type} entity '{entity_name}' with these results: {str(all_results)[:500]}"
                         },
                         timeout=60
                     )
                     
                     if mermaid_response.ok:
                         mermaid_data = mermaid_response.json()
-                        mermaid_code = mermaid_data.get("mermaid_code", "")
+                        mermaid_code = mermaid_data.get("data", {}).get("mermaid_code", "") if mermaid_data.get("success") else ""
                         
                         if mermaid_code and mermaid_code.strip():
                             st.success("✅ Diagram generated!")
@@ -1039,7 +689,7 @@ with tab_tools:
     with col1:
         st.subheader("System Health")
         try:
-            health_res = requests.get(f"{ORCHESTRATOR_SERVICE}/health", timeout=5)
+            health_res = requests.get(f"{GATEWAY_URL}/health", timeout=5)
             if health_res.ok:
                 health_data = health_res.json()
                 status = health_data.get("status", "unknown")
@@ -1050,8 +700,10 @@ with tab_tools:
                     st.error("System Unhealthy")
                 
                 services = health_data.get("services", {})
-                for service_name, service_url in services.items():
-                    st.write(f"✓ {service_name}: ok")
+                for service_name, service_status in services.items():
+                    service_ok = service_status.get("status") == "healthy"
+                    icon = "✓" if service_ok else "✗"
+                    st.write(f"{icon} {service_name}: {'ok' if service_ok else 'error'}")
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
@@ -1063,16 +715,17 @@ with tab_tools:
             if st.button("🗑️ Clear Database"):
                 try:
                     res = requests.post(
-                        f"{ORCHESTRATOR_SERVICE}/execute",
-                        json={
-                            "tool_name": "clear_index",
-                            "tool_input": {}
-                        },
+                        f"{GATEWAY_URL}/api/chat",
+                        json={"query": "Clear and delete all indexed data from the database"},
                         timeout=30
                     )
                     if res.ok:
-                        st.success("✅ Database cleared!")
-                        st.balloons()
+                        data = res.json()
+                        if data.get("success"):
+                            st.success("✅ Database cleared!")
+                            st.balloons()
+                        else:
+                            st.error(f"Error: {data.get('error', 'Unknown error')}")
                 except Exception as e:
                     st.error(f"Error: {str(e)}")
     
@@ -1143,17 +796,14 @@ with tab_tools:
     st.divider()
     
     st.subheader("API Info")
-    st.write(f"**Orchestrator URL:** `{ORCHESTRATOR_SERVICE}`")
-    st.write(f"**Architecture:** Streamlit → Orchestrator (direct calls)")
+    st.write(f"**Gateway URL:** `{GATEWAY_URL}`")
+    st.write(f"**Architecture:** Streamlit → Gateway → Orchestrator → Agents")
     st.write(f"**Session:** `{st.session_state.session_id or 'Not initialized'}`")
 
-    if st.button("View Orchestrator Tools"):
-            tools = {
-                "execute_query": "Execute Cypher query",
-                "index_repository": "Index a repository",
-                "get_index_status": "Get indexing stats",
-                "clear_index": "Clear all data",
-                "analyze_query": "Analyze user intent",
-                "generate_mermaid": "Generate diagram",
+    if st.button("View Gateway Endpoints"):
+            endpoints = {
+                "/health": "System health check",
+                "/api/chat": "Chat with orchestrator",
+                "/api": "API info",
             }
-            st.json(tools)
+            st.json(endpoints)

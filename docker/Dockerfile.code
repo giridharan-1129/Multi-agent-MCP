@@ -13,4 +13,4 @@ COPY src/ src/
 COPY .env.example .env.example
 EXPOSE 8004
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=5 CMD nc -z localhost 8004 || exit 1
-CMD ["python", "-m", "uvicorn", "src.services.code_analyst_service.main:app", "--host", "0.0.0.0", "--port", "8004"]
+CMD ["uvicorn", "src.services.code_analyst_service.main:app", "--host", "0.0.0.0", "--port", "8004"]

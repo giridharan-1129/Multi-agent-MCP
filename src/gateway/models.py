@@ -6,7 +6,7 @@ WHY: Type safety and validation for all endpoints
 HOW: Define models for each endpoint group
 """
 
-from typing import Optional
+from typing import Optional, List
 from pydantic import BaseModel
 
 
@@ -15,29 +15,60 @@ from pydantic import BaseModel
 # ========================
 
 class ChatRequest(BaseModel):
-    """Chat request model."""
+    """Chat request model from Streamlit/clients."""
 
     query: str
-    """User query"""
+    """User query to process"""
 
     session_id: Optional[str] = None
-    """Optional session ID"""
+    """Optional session ID for conversation context"""
+    
+    class Config:
+        """Pydantic config."""
+        json_schema_extra = {
+            "example": {
+                "query": "What is the FastAPI class?",
+                "session_id": "550e8400-e29b-41d4-a716-446655440000"
+            }
+        }
 
 
 class ChatResponse(BaseModel):
-    """Chat response model."""
-
-    session_id: str
-    """Session ID"""
-
+    """Response from Orchestrator to client."""
+    
+    success: bool
+    """Whether query was processed successfully"""
+    
     response: str
-    """Response text"""
-
-    agents_used: list
-    """Agents that were used"""
-
-    correlation_id: str
-    """Correlation ID for tracing"""
+    """Final synthesized response from agents"""
+    
+    agents_used: List[str]
+    """List of agents that processed the query"""
+    
+    intent: Optional[str] = None
+    """Detected query intent"""
+    
+    entities_found: List[str] = []
+    """Entities extracted from query"""
+    
+    session_id: Optional[str] = None
+    """Session ID for this conversation"""
+    
+    error: Optional[str] = None
+    """Error message if unsuccessful"""
+    
+    class Config:
+        """Pydantic config."""
+        json_schema_extra = {
+            "example": {
+                "success": True,
+                "response": "FastAPI is a modern web framework...",
+                "agents_used": ["graph_query", "code_analyst"],
+                "intent": "explain",
+                "entities_found": ["FastAPI"],
+                "session_id": "550e8400-e29b-41d4-a716-446655440000"
+            }
+        }
 
 
 # ========================
@@ -48,17 +79,17 @@ class IndexRequest(BaseModel):
     """Repository indexing request."""
 
     repo_url: str
-    """Repository URL"""
+    """Repository URL to index"""
 
-    full_index: bool = True
-    """Whether to do full index"""
+    branch: str = "main"
+    """Git branch to index"""
 
 
 class IndexResponse(BaseModel):
     """Repository indexing response."""
 
     status: str
-    """Indexing status"""
+    """Indexing status: pending, running, completed, failed"""
 
     files_processed: int
     """Number of files processed"""
@@ -70,33 +101,11 @@ class IndexResponse(BaseModel):
     """Number of relationships created"""
 
 
-class IndexJobResponse(BaseModel):
-    """Index job response (for async indexing)."""
-
-    job_id: str
-    """Unique job ID"""
+class IndexStatusResponse(BaseModel):
+    """Index status response."""
 
     status: str
-    """Job status: pending, running, completed, failed"""
-
-    repo_url: str
-    """Repository URL"""
-
-    created_at: str
-    """When job was created"""
-
-    correlation_id: str
-    """Correlation ID for tracing"""
-
-
-class IndexJobStatusResponse(BaseModel):
-    """Index job status response."""
-
-    job_id: str
-    """Job ID"""
-
-    status: str
-    """Job status"""
+    """Current indexing status"""
 
     progress: Optional[float] = None
     """Progress percentage (0-100)"""
@@ -107,42 +116,5 @@ class IndexJobStatusResponse(BaseModel):
     entities_created: Optional[int] = None
     """Entities created so far"""
 
-    relationships_created: Optional[int] = None
-    """Relationships created so far"""
-
     error: Optional[str] = None
     """Error message if failed"""
-
-    correlation_id: str
-    """Correlation ID for tracing"""
-
-
-class IndexJobStatusResponse(BaseModel):
-    """Index job status response."""
-
-    job_id: str
-    """Job ID"""
-
-    status: str
-    """Job status: pending, running, completed, failed"""
-
-    progress: Optional[float] = None
-    """Progress percentage (0-100)"""
-
-    files_processed: Optional[int] = None
-    """Files processed so far"""
-
-    entities_created: Optional[int] = None
-    """Entities created so far"""
-
-    packages_created: Optional[int] = None
-    """Packages created so far"""
-
-    relationships_created: Optional[int] = None
-    """Relationships created so far"""
-
-    error: Optional[str] = None
-    """Error message if failed"""
-
-    correlation_id: str
-    """Correlation ID for tracing"""

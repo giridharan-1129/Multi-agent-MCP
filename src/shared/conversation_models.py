@@ -34,11 +34,8 @@ class ConversationTurn(BaseModel):
     turn_number: int
     role: str  # "user" or "assistant"
     content: str
-    turn_meta: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)  # Changed from turn_meta
     created_at: Optional[datetime] = None
-    
-    class Config:
-        json_encoders = {UUID: str, datetime: str}
 
 
 class AgentResponse(BaseModel):
