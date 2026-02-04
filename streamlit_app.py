@@ -18,12 +18,11 @@ sys.path.insert(0, '/mnt/project')
 from mermaid_renderer import render_mermaid_diagram
 from relationship_mappings import get_cypher_query_templates, get_query_description
 from network_graph_renderer import render_network_graph, extract_nodes_and_edges
-INDEXER_SERVICE = os.getenv("INDEXER_SERVICE_URL", "http://localhost:8002")
-GRAPH_QUERY_SERVICE = os.getenv("GRAPH_QUERY_SERVICE_URL", "http://localhost:8003")
-ORCHESTRATOR_SERVICE = os.getenv("ORCHESTRATOR_SERVICE_URL", "http://localhost:8001")
-
-# Configuration
-API_BASE = os.getenv("API_BASE", "http://localhost:8000")
+# Gateway is the primary entry point
+# These are for reference only (Gateway handles routing)
+INDEXER_SERVICE = os.getenv("INDEXER_SERVICE_URL", "http://indexer_service:8002")
+GRAPH_QUERY_SERVICE = os.getenv("GRAPH_QUERY_SERVICE_URL", "http://graph_query_service:8003")
+ORCHESTRATOR_SERVICE = os.getenv("ORCHESTRATOR_SERVICE_URL", "http://orchestrator_service:8001")
 REFRESH_INTERVAL = 3  # seconds
 
 # Page config
@@ -121,164 +120,217 @@ tab_chat, tab_graph, tab_tools = st.tabs(["Chat", "Knowledge Graph", "Tools"])
 with tab_chat:
     # SIDEBAR
     with st.sidebar:
-        st.header("Repository Indexing")
-        
+        st.header("🔍 Repository Indexing")
+    
+        # URL Input
         repo_url = st.text_input(
             "GitHub Repository URL",
             placeholder="https://github.com/tiangolo/fastapi",
             key="repo_url_input"
         )
-        
-        st.subheader("Actions")
-        
+    
+        st.divider()
+    
+        # Action Buttons
         col1, col2 = st.columns(2)
         with col1:
-            start_index = st.button("Start Indexing", use_container_width=True, key="start_btn")
+            start_index = st.button("📦 Start Indexing", use_container_width=True, key="start_btn")
         with col2:
-            refresh_status = st.button("Refresh", use_container_width=True, key="refresh_btn")
+            start_embed = st.button("⚡ Start Embedding", use_container_width=True, key="embed_btn")
         
-        st.divider()
-        
-        # âœ¨ VECTOR EMBEDDINGS SECTION
-        # Hide embeddings section for MCP demo - students focus on agent orchestration
-        with st.expander("⚙️ Vector Embeddings (Optional - Advanced)", expanded=False):
-            st.info("💡 Embeddings add semantic search capability. For core MCP demo, Neo4j graph search is sufficient.")
-            st.subheader("Vector Embeddings (Pinecone)")
-            
-            embed_button = st.button(
-            "Embed Repository",
-            use_container_width=True,
-            key="embed_btn",
-            help="Create 650-line code chunks and generate embeddings for semantic search"
-                        )   
-        
-        if embed_button:
-            if not repo_url:
-                st.error("Please enter a repository URL first!")
+    # Handle Indexing Button
+    if start_index:
+        if not repo_url:
+            st.error("Please enter a repository URL first!")
+        else:
+            st.session_state.indexing_active = True
+            st.session_state.last_repo_url = repo_url
+            st.rerun()
+    
+    # Handle Embedding Button
+    if start_embed:
+        if not repo_url:
+            st.error("Please enter a repository URL first!")
+        else:
+            st.session_state.embedding_active = True
+            st.session_state.last_repo_url = repo_url
+            st.rerun()
+    
+    st.divider()
+    
+    # Neo4j Stats
+    st.subheader("📊 Neo4j Stats")
+    try:
+        res = requests.post(
+            f"{ORCHESTRATOR_SERVICE}/execute",
+            json={"query": "Give me the statistics for our Neo4j database"},
+            timeout=10
+        )
+        if res.ok:
+            data = res.json()
+            if data.get("success"):
+                stats = data.get('data', {}).get('statistics', {})
+                nodes = stats.get('nodes', {})
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Classes", nodes.get("Class", 0))
+                with col2:
+                    st.metric("Functions", nodes.get("Function", 0))
+                with col3:
+                    st.metric("Files", nodes.get("File", 0))
+    except Exception as e:
+        st.caption(f"Neo4j stats unavailable: {str(e)[:50]}")
+    
+    st.divider()
+    
+    # Pinecone Stats
+    st.subheader("⚡ Pinecone Embeddings")
+    try:
+        res = requests.post(
+            f"{ORCHESTRATOR_SERVICE}/execute",
+            json={"query": "Give me the statistics for our Pinecone vector database"},
+            timeout=10
+        )
+        if res.ok:
+            data = res.json()
+            if data.get("success"):
+                stats = data.get('data', {}).get('statistics', {})
+                st.metric("Vectors Stored", stats.get("total_vectors", 0))
+                st.metric("Dimension", stats.get("dimension", 1536))
+                st.caption(f"Index: {stats.get('index_name', 'code-search')}")
             else:
-                st.session_state.embedding_active = True
-                st.session_state.last_repo_url = repo_url
-                st.rerun()
+                st.caption("Pinecone not configured")
+    except Exception as e:
+        st.caption(f"Pinecone stats unavailable: {str(e)[:50]}")  
 
-# Show embedding progress if active
-if st.session_state.get("embedding_active", False):
-    st.markdown("### Embedding Progress")
+# Show indexing progress if active
+# Show indexing progress if active
+if st.session_state.get("indexing_active", False):
+    st.markdown("### 📦 Indexing Progress")
     
     progress_placeholder = st.empty()
     status_container = st.container()
     
     try:
-        embed_url = st.session_state.get("last_repo_url", repo_url)
+        index_url = st.session_state.get("last_repo_url")
         
-        if embed_url:
+        if index_url:
             with progress_placeholder:
-                st.progress(25, text="Calling MCP Indexer Tool...")
+                st.progress(25, text="Sending indexing request...")
             
             with status_container:
-                with st.spinner("Indexing repository via MCP..."):
-                    # Call Orchestrator to execute indexer tool
-                    embed_res = requests.post(
+                with st.spinner("Indexing repository to Neo4j..."):
+                    # Natural language request to Orchestrator
+                    index_res = requests.post(
                         f"{ORCHESTRATOR_SERVICE}/execute",
                         json={
                             "tool_name": "index_repository",
                             "tool_input": {
-                                "repo_url": embed_url,
+                                "repo_url": index_url,
                                 "branch": "main"
                             }
                         },
                         timeout=300
                     )
             
-            if embed_res.ok:
-                embed_data = embed_res.json()
+            if index_res.ok:
+                index_data = index_res.json()
                 
                 with progress_placeholder:
                     st.progress(100, text="Indexing Complete!")
                 
                 with status_container:
-                    st.success("✅ Repository Indexed Successfully!")
-                    
-                    stats = embed_data.get('data', {}).get('statistics', {})
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Files Indexed", stats.get('files_indexed', 0))
-                    with col2:
-                        st.metric("Classes Found", stats.get('classes', 0))
-                    with col3:
-                        st.metric("Functions Found", stats.get('functions', 0))
-                
-                st.session_state.embedding_active = False
-                st.session_state.embeddings_created = True
-                time.sleep(2)
+                    if index_data.get("success"):
+                        st.success("✅ Repository Indexed Successfully!")
+                        
+                        stats = index_data.get('data', {}).get('statistics', {})
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Files Indexed", stats.get('files_indexed', 0))
+                        with col2:
+                            st.metric("Classes Found", stats.get('classes', 0))
+                        with col3:
+                            st.metric("Functions Found", stats.get('functions', 0))
+                        
+                        st.session_state.indexing_active = False
+                        st.session_state.embeddings_created = True
+                        time.sleep(2)
+                        st.rerun()
+                    else:
+                        st.error(f"⚠️ Indexing failed: {index_data.get('error', 'Unknown error')}")
+                        st.session_state.indexing_active = False
             else:
                 with status_container:
-                    st.error(f"⚠️ Indexing failed: {embed_res.text}")
-                st.session_state.embedding_active = False
+                    st.error(f"⚠️ Indexing failed: {index_res.text}")
+                st.session_state.indexing_active = False
                 
     except requests.exceptions.Timeout:
         with status_container:
-            st.error("Indexing timeout - large repository")
-        st.session_state.embedding_active = False
+            st.error("⏱️ Indexing timeout - large repository")
+        st.session_state.indexing_active = False
     except Exception as e:
         with status_container:
-            st.error(f"Error: {str(e)}")
-        st.session_state.embedding_active = False
+            st.error(f"❌ Error: {str(e)}")
+        st.session_state.indexing_active = False
         
         if refresh_status:
             st.rerun()
         
         st.divider()
         
-        # DATABASE STATS with State Management (NO CACHE - updates in real-time)
-        st.subheader(" Neo4j Database Stats")
+        # DATABASE STATS - Neo4j + Pinecone (both from Indexer via Orchestrator)
+        st.subheader("📊 Database Statistics")
         try:
-            # Call Orchestrator to execute get_index_status MCP tool
             res = requests.post(
-                f"{ORCHESTRATOR_SERVICE}/execute",
-                json={
-                    "tool_name": "get_index_status",
-                    "tool_input": {}
-                },
-                timeout=10
-            )
+                    f"{ORCHESTRATOR_SERVICE}/execute",
+                    json={},
+                    timeout=10
+                )
             if res.ok:
                 tool_result = res.json()
-                stats = tool_result.get('data', {}).get('statistics', {})
-                nodes = stats.get('nodes', {})
-                
-                # Store stats in session state
-                st.session_state.db_stats = {
-                    "Package": nodes.get("Package", 0),
-                    "File": nodes.get("File", 0),
-                    "Class": nodes.get("Class", 0),
-                    "Function": nodes.get("Function", 0),
-                    "Parameter": nodes.get("Parameter", 0),
-                    "Type": nodes.get("Type", 0),
-                }
-                
-                # Store stats in session state (persists across reruns during indexing)
-                st.session_state.db_stats = {
-                    "Package": nodes.get("Package", 0),
-                    "File": nodes.get("File", 0),
-                    "Class": nodes.get("Class", 0),
-                    "Function": nodes.get("Function", 0),
-                    "Parameter": nodes.get("Parameter", 0),
-                    "Type": nodes.get("Type", 0),
-                }
-                
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Packages", st.session_state.db_stats["Package"])
-                    st.metric("Files", st.session_state.db_stats["File"])
-                with col2:
-                    st.metric("Classes", st.session_state.db_stats["Class"])
-                    st.metric("Functions", st.session_state.db_stats["Function"])
-                with col3:
-                    st.metric("Parameters", st.session_state.db_stats["Parameter"])
-                    st.metric("Types", st.session_state.db_stats["Type"])
-        except:
-            st.warning("Could not fetch Neo4j stats")
-        
+                if tool_result.get("success"):
+                    stats = tool_result.get('data', {}).get('statistics', {})
+                    
+                    # NEO4J STATS
+                    nodes = stats.get('nodes', {})
+                    st.session_state.db_stats = {
+                        "Package": nodes.get("Package", 0),
+                        "File": nodes.get("File", 0),
+                        "Class": nodes.get("Class", 0),
+                        "Function": nodes.get("Function", 0),
+                        "Parameter": nodes.get("Parameter", 0),
+                        "Type": nodes.get("Type", 0),
+                    }
+                    
+                    st.write("**🔗 Neo4j Knowledge Graph**")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("📦 Packages", st.session_state.db_stats["Package"])
+                        st.metric("📄 Files", st.session_state.db_stats["File"])
+                    with col2:
+                        st.metric("🏗️ Classes", st.session_state.db_stats["Class"])
+                        st.metric("⚙️ Functions", st.session_state.db_stats["Function"])
+                    with col3:
+                        st.metric("📝 Parameters", st.session_state.db_stats["Parameter"])
+                        st.metric("🔤 Types", st.session_state.db_stats["Type"])
+                    
+                    # PINECONE STATS
+                    pinecone_stats = stats.get('pinecone', {})
+                    if pinecone_stats:
+                        st.write("**⚡ Pinecone Vector Embeddings**")
+                        col4, col5 = st.columns(2)
+                        with col4:
+                            st.metric("📦 Code Chunks", pinecone_stats.get("chunks_total", 0))
+                            st.caption(f"Model: {pinecone_stats.get('embedding_model', 'N/A')}")
+                        with col5:
+                            st.metric("🧬 Total Vectors", pinecone_stats.get("total_vectors", 0))
+                            st.caption(f"Index: {pinecone_stats.get('index_name', 'N/A')}")
+                    else:
+                        st.info("💡 Pinecone not configured (Neo4j graph search available)")
+                else:
+                    st.warning(f"❌ {tool_result.get('error', 'Could not fetch stats')}")
+        except Exception as e:
+            st.warning(f"Could not fetch database stats: {str(e)[:50]}")
         st.divider()
         
         # PINECONE EMBEDDINGS STATS
@@ -354,12 +406,9 @@ if st.session_state.get("embedding_active", False):
                     try:
                         response = requests.post(
                             f"{ORCHESTRATOR_SERVICE}/execute",
-                            json={
-                                "tool_name": "get_index_status",
-                                "tool_input": {}
-                            },
-                            timeout=5
-                        )
+                                    json={},
+                                    timeout=5
+                                )
                         if response.ok:
                             tool_result = response.json()
                             neo4j_stats = tool_result.get('data', {}).get('statistics', {})
@@ -562,198 +611,163 @@ if st.session_state.get("embedding_active", False):
         
         try:
             with st.chat_message("assistant"):
-                # DETERMINE WHICH ENDPOINT TO USE
-                if chat_mode == "Agentic AI":
-                    # ===== AGENTIC AI MODE =====
-                    with st.spinner("🧠 GPT-4 is reasoning and chaining tools..."):
-                        payload = {"query": query, "session_id": st.session_state.session_id or "streamlit-demo"}
-                        
-                        res = requests.post(
-                            f"{ORCHESTRATOR_SERVICE}/execute",
-                            json=payload,
-                            timeout=120  # Agentic can take longer
-                        )
-                    
-                    if res.ok:
-                        data = res.json()
-                        answer = data["response"]
-                        thinking_process = data.get("thinking_process", [])
-                        tools_used = data.get("tools_used", [])
-                        iterations = data.get("iterations", 0)
-                        retrieved_context = data.get("retrieved_context", [])
+                # Agentic AI Mode - calls Orchestrator which chains tools
+                with st.spinner("🧠 Orchestrator is analyzing and chaining tools..."):
+                    payload = {
+                            "query": query
 
-                        # Display answer with streaming effect
-                        message_placeholder = st.empty()
-                        displayed_text = ""
-                        for char in answer:
-                            displayed_text += char
-                            message_placeholder.write(displayed_text)
-                            time.sleep(0.01)
-                        
-                        st.divider()
-                        
-                        # SHOW AGENTIC THINKING PROCESS
-                        with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=True):
-                            for i, step in enumerate(thinking_process, 1):
-                                st.caption(f"**Step {i}:** {step[:200]}...")
-                        
-                        # SHOW RETRIEVED CONTEXT (SOURCES)
-                        if retrieved_context:
-                            embeddings_sources = [s for s in retrieved_context if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
-                            neo4j_sources = [s for s in retrieved_context if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
-                            
-                            if embeddings_sources:
-                                st.write("### 📝 Pinecone Code Chunks (Semantic Search)")
-                                for idx, source in enumerate(embeddings_sources, 1):
-                                    with st.container(border=True):
-                                        col1, col2 = st.columns([0.8, 0.2])
-                                        
-                                        with col1:
-                                            st.markdown(f"""
-**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
-- **Lines:** {source.get('lines', 'N/A')}
-- **Relevance:** {source.get('relevance', 'N/A')}
-- **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
-                                            """)
-                                            st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
-                                        
-                                        with col2:
-                                            view_key = f"agentic_view_{idx}_{time.time()}"
-                                            if st.button("📂 View Code", key=view_key):
-                                                st.session_state[f"show_{view_key}"] = True
-                                            
-                                            if st.session_state.get(f"show_{view_key}"):
-                                                st.code(source.get('content', source.get('preview', 'N/A')), language=source.get('language', 'python'))
-                            
-                            if neo4j_sources:
-                                st.write("### 🔗 Neo4j Entity Relationships (Graph)")
-                                for idx, source in enumerate(neo4j_sources, 1):
-                                    with st.container(border=True):
-                                        st.markdown(f"""
-**{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
-- **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
-- **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
-- **Module:** {source.get('module', 'N/A')}
-                                        """)
-                        
-                        # SHOW TOOLS USED
-                        if tools_used:
-                            st.write("**🔧 Tools Used:**")
-                            tool_str = " ".join([f'<span class="agent-badge">{t}</span>' for t in tools_used])
-                            st.markdown(tool_str, unsafe_allow_html=True)
-                        
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                            "thinking_process": thinking_process,
-                            "tools_used": tools_used,
-                            "iterations": iterations,
-                            "retrieved_context": retrieved_context
-                        })
-                        st.rerun()
-                    else:
-                        st.error(f"Error: {res.text}")
+                    }
+                    
+                    res = requests.post(
+                        f"{ORCHESTRATOR_SERVICE}/execute",
+                        json=payload,
+                        timeout=120  # Agentic can take longer
+                    )
                 
-                else:
-                    # ===== RAG MODE (Original) =====
-                    payload = {"query": query, "session_id": st.session_state.session_id}
+                if res.ok:
+                    data = res.json()
                     
-                    with st.spinner("Processing..."):
-                        res = requests.post(
-                            f"{ORCHESTRATOR_SERVICE}/execute",
-                            json=payload,
-                            timeout=60
-                        )
-                    
-                    if res.ok:
-                        data = res.json()
-                        st.session_state.session_id = data["session_id"]
+                    # Handle success/error wrapper from tool execution
+                    if data.get("success"):
+                        result_data = data.get("data", {})
                         
-                        answer = data["response"]
-                        retrieved_context = data.get("retrieved_context", [])
-                        agents_used = data.get("agents_used", [])
+                        # For analyze_query, we get intent and entities
+                        intent = result_data.get("intent", "search")
+                        entities = result_data.get("entities", [])
                         
-                        # Streaming effect
-                        message_placeholder = st.empty()
-                        displayed_text = ""
-                        for char in answer:
-                            displayed_text += char
-                            message_placeholder.write(displayed_text)
-                            time.sleep(0.01)
-                        
-                        st.divider()
-                        
-                        if retrieved_context:
-                            embeddings_sources = [s for s in retrieved_context if s.get('type') == 'code_chunk']
-                            graph_sources = [s for s in retrieved_context if s.get('type') == 'relationship']
+                        # Now route to appropriate agents based on intent
+                        with st.spinner("🔀 Routing to agents..."):
+                            route_payload = {
+                                    "query": query,
+                                    "intent": intent
+                                
+                            }
                             
-                            if embeddings_sources:
-                                st.write("### 📝 Pinecone Code Chunks (Semantic Search)")
-                                for idx, source in enumerate(embeddings_sources, 1):
-                                    with st.container(border=True):
-                                        col1, col2 = st.columns([0.8, 0.2])
-                                        
-                                        with col1:
-                                            reranked_status = "✅ Reranked" if source.get('reranked') else "⭕ Original"
-                                            st.markdown(f"""
-**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
-- **Lines:** {source.get('lines', 'N/A')}
-- **Relevance:** {source.get('relevance_percent', 'N/A')}
-- **Status:** {reranked_status}
-- **Chunk ID:** `{source.get('chunk_id', 'N/A')}`
-- **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
-- **Model:** {source.get('embedding_model', 'N/A')}
-                                            """)
-                                            st.caption(f"Preview: {source.get('preview', 'N/A')[:100]}...")
-                                        
-                                        with col2:
-                                            view_key = f"view_{st.session_state.session_id}_{idx}_{time.time()}"
-
-                                            if st.button("📂 View Code", key=view_key):
-                                                st.session_state[f"show_{view_key}"] = True
-
-                                            # Show code if button clicked
-                                            if st.session_state.get(f"show_{view_key}"):
-                                                st.code(source.get('content'), language="python")
-                                        st.divider()
-                                        col_title, col_x = st.columns([0.9, 0.1])
-                                        with col_title:
-                                            st.subheader(f"📄 {source.get('file_name', 'unknown')} (Lines {source.get('lines', 'N/A')})")
-                                        with col_x:
-                                            if st.button("✕", key=f"chunk_close_{idx}"):
-                                                st.session_state[f"show_chunk_{idx}"] = False
-                                        
-                                        st.code(source.get('content', source.get('preview', 'Code not available')), language=source.get('language', 'python'))
-                                        st.divider()
+                            route_res = requests.post(
+                                f"{ORCHESTRATOR_SERVICE}/execute",
+                                json=route_payload,
+                                timeout=30
+                            )
+                        
+                        if route_res.ok:
+                            route_data = route_res.json()
                             
-                            if graph_sources:
-                                st.write("### 🔗 Neo4j Entity Relationships (Graph)")
-                                for idx, source in enumerate(graph_sources, 1):
-                                    with st.container(border=True):
-                                        st.markdown(f"""
-**{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
-- **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
-- **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
-- **Module:** {source.get('module', 'N/A')}
-- **Line:** {source.get('line_number', 'N/A')}
-                                        """)
-                        
-                        if agents_used:
-                            agent_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents_used])
-                            st.markdown(agent_str, unsafe_allow_html=True)
-                        
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": answer,
-                            "sources": retrieved_context,
-                            "agents": agents_used
-                        })
-                        st.rerun()
+                            if route_data.get("success"):
+                                route_result = route_data.get("data", {})
+                                recommended_agents = route_result.get("recommended_agents", [])
+                                
+                                # Call each agent tool
+                                all_agent_results = []
+                                thinking_steps = [
+                                    f"Query Intent: {intent}",
+                                    f"Identified entities: {', '.join(entities) if entities else 'None'}",
+                                    f"Routing to agents: {', '.join(recommended_agents)}"
+                                ]
+                                
+                                with st.spinner("🔍 Querying agents..."):
+                                    for agent in recommended_agents:
+                                        try:
+                                            agent_payload = {
+                                                    "agent": agent,
+                                                    "tool": "find_entity" if agent == "graph_query" else "analyze_function",
+                                                    "input": {
+                                                        "name": entities[0] if entities else query
+                                                    }
+                                                }
+                                            
+                                            agent_res = requests.post(
+                                                f"{ORCHESTRATOR_SERVICE}/execute",
+                                                json=agent_payload,
+                                                timeout=30
+                                            )
+                                            
+                                            if agent_res.ok:
+                                                agent_data = agent_res.json()
+                                                if agent_data.get("success"):
+                                                    all_agent_results.append({
+                                                        "agent": agent,
+                                                        "data": agent_data.get("data", {})
+                                                    })
+                                                    thinking_steps.append(f"✅ {agent}: completed")
+                                                else:
+                                                    thinking_steps.append(f"❌ {agent}: {agent_data.get('error', 'failed')}")
+                                        except Exception as e:
+                                            thinking_steps.append(f"❌ {agent}: {str(e)}")
+                                
+                                # Synthesize final response
+                                with st.spinner("🧠 Synthesizing response..."):
+                                    synthesis_payload = {
+                                            "agent_results": all_agent_results,
+                                            "original_query": query
+                                        }
+                                    
+                                    synthesis_res = requests.post(
+                                        f"{ORCHESTRATOR_SERVICE}/execute",
+                                        json=synthesis_payload,
+                                        timeout=30
+                                    )
+                                
+                                if synthesis_res.ok:
+                                    synthesis_data = synthesis_res.json()
+                                    
+                                    if synthesis_data.get("success"):
+                                        synthesis_result = synthesis_data.get("data", {})
+                                        answer = synthesis_result.get("synthesis", "No response generated")
+                                        
+                                        # Display answer with streaming effect
+                                        message_placeholder = st.empty()
+                                        displayed_text = ""
+                                        for char in answer:
+                                            displayed_text += char
+                                            message_placeholder.write(displayed_text)
+                                            time.sleep(0.01)
+                                        
+                                        st.divider()
+                                        
+                                        # SHOW THINKING PROCESS
+                                        with st.expander(f"🧠 Thinking Process ({len(thinking_steps)} steps)", expanded=False):
+                                            for i, step in enumerate(thinking_steps, 1):
+                                                st.caption(f"**Step {i}:** {step}")
+                                        
+                                        # SHOW AGENT RESULTS
+                                        if all_agent_results:
+                                            st.write("**🔧 Agent Results:**")
+                                            for result in all_agent_results:
+                                                agent_name = result.get("agent", "Unknown")
+                                                agent_data = result.get("data", {})
+                                                st.write(f"**{agent_name.title()}:** {agent_data}")
+                                        
+                                        # SHOW TOOLS USED
+                                        st.write("**🔧 Tools Used:**")
+                                        tool_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in recommended_agents])
+                                        st.markdown(tool_str, unsafe_allow_html=True)
+                                        
+                                        st.session_state.messages.append({
+                                            "role": "assistant",
+                                            "content": answer,
+                                            "thinking_process": thinking_steps,
+                                            "tools_used": recommended_agents,
+                                            "iterations": len(thinking_steps),
+                                            "retrieved_context": []
+                                        })
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Synthesis failed: {synthesis_data.get('error', 'Unknown error')}")
+                                else:
+                                    st.error(f"Synthesis request failed: {synthesis_res.text}")
+                            else:
+                                st.error(f"Routing failed: {route_data.get('error', 'Unknown error')}")
+                        else:
+                            st.error(f"Routing request failed: {route_res.text}")
                     else:
-                        st.error(f"Error: {res.text}")
+                        st.error(f"Query analysis failed: {data.get('error', 'Unknown error')}")
+                        st.session_state.messages.append({"role": "assistant", "content": "Query analysis failed"})
+                        st.rerun()
+                else:
+                    st.error(f"Error: {res.text}")
         
         except requests.exceptions.Timeout:
-            st.error(" Timeout")
+            st.error("⏱️ Request timeout")
         except Exception as e:
             st.error(f"Error: {str(e)}")
 
@@ -782,9 +796,7 @@ with tab_graph:
                 f"{ORCHESTRATOR_SERVICE}/execute",
                 json={
                     "tool_name": "execute_query",
-                    "tool_input": {
-                        "query": cypher
-                    }
+                    "tool_input": {"query": cypher}
                 },
                 timeout=10
             )
@@ -906,12 +918,12 @@ with tab_graph:
                                 json={
                                     "tool_name": "execute_query",
                                     "tool_input": {
-                                        "query": query,
-                                        "parameters": {"name": entity_name}
-                                    }
-                                },
-                                timeout=20
-                            )
+                                            "query": query,
+                                            "parameters": {"name": entity_name}
+                                        }
+                                    },
+                                    timeout=20
+                                )
                             if cypher_exec_response.ok:
                                 exec_data = cypher_exec_response.json()
                                 results = exec_data.get("result", [])
@@ -981,17 +993,17 @@ with tab_graph:
                 try:
                     # Call your existing mermaid endpoint
                     mermaid_response = requests.post(
-                            f"{ORCHESTRATOR_SERVICE}/execute",
-                            json={
-                                "tool_name": "generate_mermaid",
-                                "tool_input": {
-                                    "query_results": all_results,
-                                    "entity_name": entity_name,
-                                    "entity_type": selected_type
-                                }
-                            },
-                            timeout=60
-                        )
+                        f"{ORCHESTRATOR_SERVICE}/execute",
+                        json={
+                            "tool_name": "generate_mermaid",
+                            "tool_input": {
+                                "query_results": all_results,
+                                "entity_name": entity_name,
+                                "entity_type": selected_type
+                            }
+                        },
+                        timeout=60
+                    )
                     
                     if mermaid_response.ok:
                         mermaid_data = mermaid_response.json()
@@ -1027,21 +1039,19 @@ with tab_tools:
     with col1:
         st.subheader("System Health")
         try:
-            health_res = requests.get(f"{API_BASE}/health", timeout=5)
+            health_res = requests.get(f"{ORCHESTRATOR_SERVICE}/health", timeout=5)
             if health_res.ok:
                 health_data = health_res.json()
                 status = health_data.get("status", "unknown")
                 
                 if status == "healthy":
-                    st.success(" System Healthy")
+                    st.success("✓ System Healthy")
                 else:
                     st.error("System Unhealthy")
                 
-                components = health_data.get("components", {})
-                for comp_name, comp_data in components.items():
-                    comp_status = comp_data.get("status", "unknown")
-                    icon = "" if comp_status == "healthy" else "âŒ"
-                    st.write(f"{icon} {comp_name.replace('_', ' ').title()}")
+                services = health_data.get("services", {})
+                for service_name, service_url in services.items():
+                    st.write(f"✓ {service_name}: ok")
         except Exception as e:
             st.error(f"Error: {str(e)}")
     
@@ -1133,16 +1143,17 @@ with tab_tools:
     st.divider()
     
     st.subheader("API Info")
-    st.write(f"**Base URL:** `{API_BASE}`")
+    st.write(f"**Orchestrator URL:** `{ORCHESTRATOR_SERVICE}`")
+    st.write(f"**Architecture:** Streamlit → Orchestrator (direct calls)")
     st.write(f"**Session:** `{st.session_state.session_id or 'Not initialized'}`")
-    
-    if st.button("View Endpoints"):
-        endpoints = {
-            "/health": "Health check",
-            "/agents": "List agents",
-            "/api/rag-chat": "RAG chat",
-            "/api/graph/generate-mermaid": "Generate diagram",
-            "/api/index": "Start indexing",
-            "/api/query/find": "Find entity",
-        }
-        st.json(endpoints)
+
+    if st.button("View Orchestrator Tools"):
+            tools = {
+                "execute_query": "Execute Cypher query",
+                "index_repository": "Index a repository",
+                "get_index_status": "Get indexing stats",
+                "clear_index": "Clear all data",
+                "analyze_query": "Analyze user intent",
+                "generate_mermaid": "Generate diagram",
+            }
+            st.json(tools)

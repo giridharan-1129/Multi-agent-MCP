@@ -12,12 +12,14 @@ Responsibilities:
 import os
 import asyncio
 import hashlib
+import json
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException
 import httpx
+import openai
 
 from ...shared.mcp_server import BaseMCPServer, ToolResult
 from ...shared.redis_client import RedisClientManager
@@ -182,11 +184,289 @@ class OrchestratorService(BaseMCPServer):
             },
             handler=self.store_agent_response_handler
         )
+
+        # Tool 7: Generate Mermaid Diagram
+        self.register_tool(
+            name="generate_mermaid",
+            description="Generate Mermaid diagram from Neo4j query results",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query_results": {
+                        "type": "array",
+                        "description": "Query results from Neo4j"
+                    },
+                    "entity_name": {
+                        "type": "string",
+                        "description": "Central entity name"
+                    },
+                    "entity_type": {
+                        "type": "string",
+                        "description": "Entity type (Class, Function, etc)"
+                    }
+                },
+                "required": ["query_results", "entity_name", "entity_type"]
+            },
+            handler=self.generate_mermaid_handler
+        )
+       # Tool 7: Call Agent Tool (UPDATE - add call_agent_tool)
+        self.register_tool(
+            name="call_agent_tool",
+            description="Call a specific tool on a remote agent service",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "enum": ["indexer", "graph_query", "code_analyst"],
+                        "description": "Agent service name"
+                    },
+                    "tool": {
+                        "type": "string",
+                        "description": "Tool name to execute"
+                    },
+                    "input": {
+                        "type": "object",
+                        "description": "Tool input parameters"
+                    }
+                },
+                "required": ["agent", "tool", "input"]
+            },
+            handler=self.call_agent_tool_handler
+        )
         
-        self.logger.info("Registered 6 orchestration tools")
-    
+        self.logger.info("Registered 7 orchestration tools") 
+        self.register_tool(
+            name="execute_query",
+            description="Execute a user query - orchestrates all agents",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "User query to process"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session ID for context"
+                    }
+                },
+                "required": ["query"]
+            },
+            handler=self.execute_query_handler
+        )
+        
+        self.logger.info("Registered 7 orchestration tools")    
+
+    async def execute_query_handler(
+            self,
+            query: str,
+            session_id: str = None
+        ) -> ToolResult:
+            """
+            Handle execute_query tool - Main orchestration flow.
+            
+            Flow:
+            1. Analyze query intent
+            2. Route to appropriate agents
+            3. Call agents in parallel/sequence
+            4. Synthesize results
+            5. Store conversation
+            6. Return response
+            """
+            try:
+                self.logger.info("=" * 80)
+                self.logger.info(f"📋 ORCHESTRATOR: New query received")
+                self.logger.info(f"   Query: {query[:100]}...")
+                self.logger.info(f"   Session: {session_id or 'NEW'}")
+                self.logger.info("=" * 80)
+                
+                # Step 1: Analyze query
+                self.logger.info("🔍 STEP 1: Analyzing query intent with GPT-4...")
+                analysis = await self.analyze_query_handler(query)
+                
+                if not analysis.success:
+                    self.logger.error(f"❌ Query analysis failed: {analysis.error}")
+                    return ToolResult(success=False, error="Query analysis failed")
+                
+                intent = analysis.data.get("intent", "search")
+                entities = analysis.data.get("entities", [])
+                confidence = analysis.data.get("confidence", 0)
+                
+                self.logger.info(f"   ✓ Intent: {intent} (confidence: {confidence})")
+                self.logger.info(f"   ✓ Entities found: {entities}")
+                
+                # Step 2: Route to agents
+                self.logger.info("🛣️  STEP 2: Routing to appropriate agents...")
+                routing = await self.route_to_agents_handler(query, intent)
+                
+                if not routing.success:
+                    self.logger.error(f"❌ Agent routing failed: {routing.error}")
+                    return ToolResult(success=False, error="Agent routing failed")
+                
+                agent_names = routing.data.get("recommended_agents", ["graph_query"])
+                parallel = routing.data.get("parallel", False)
+                
+                self.logger.info(f"   ✓ Agents to call: {agent_names}")
+                self.logger.info(f"   ✓ Execution mode: {'Parallel' if parallel else 'Sequential'}")
+                
+                # Step 3: Call agents
+                self.logger.info("🤖 STEP 3: Calling agents...")
+                agent_results = []
+                
+                for agent_idx, agent_name in enumerate(agent_names, 1):
+                    self.logger.info(f"\n   [{agent_idx}/{len(agent_names)}] Calling agent: {agent_name}")
+                    
+                    # Map agent name to tool selection based on query & intent
+                    if agent_name == "indexer":
+                        if intent == "index":
+                            tool_name = "index_repository"
+                            tool_input = {
+                                "repo_url": analysis.data.get("repo_url", ""),
+                                "branch": "main"
+                            }
+                        elif intent == "embed":
+                            tool_name = "embed_repository"
+                            repo_url = analysis.data.get("repo_url", "")
+                            repo_id = repo_url.split("/")[-1].replace(".git", "") if repo_url else "repo"
+                            tool_input = {
+                                "repo_url": repo_url,
+                                "repo_id": repo_id,
+                                "branch": "main"
+                            }
+                        else:
+                            tool_name = "get_index_status"
+                            tool_input = {}
+                    elif agent_name == "graph_query":
+                        tool_name = "find_entity"
+                        tool_input = {
+                            "name": entities[0] if entities else query.split()[0]
+                        }
+                    elif agent_name == "code_analyst":
+                        tool_name = "analyze_function"
+                        tool_input = {
+                            "name": entities[0] if entities else "main"
+                        }
+                    else:
+                        tool_name = "get_index_status"
+                        tool_input = {}
+                    
+                    self.logger.info(f"      → Executing {agent_name}/{tool_name}...")
+                    
+                    agent_call = await self.call_agent_tool_handler(
+                        agent=agent_name,
+                        tool=tool_name,
+                        input=tool_input
+                    )
+                    
+                    if agent_call.success:
+                        self.logger.info(f"      ✓ Agent succeeded")
+                    else:
+                        self.logger.error(f"      ❌ Agent failed: {agent_call.error}")
+                    
+                    agent_results.append({
+                        "agent": agent_name,
+                        "data": agent_call.data if agent_call.success else {"error": agent_call.error}
+                    })
+                
+                # Step 4: Synthesize response
+                # Step 4: Synthesize response
+                self.logger.info("🔗 STEP 4: Synthesizing results...")
+                self.logger.info(f"   Agent results: {len(agent_results)} responses to synthesize")
+                
+                synthesis = await self.synthesize_response_handler(agent_results, query)
+                
+                if not synthesis.success:
+                    self.logger.error(f"❌ Response synthesis failed: {synthesis.error}")
+                    return ToolResult(success=False, error="Response synthesis failed")
+                
+                response_text = synthesis.data.get("response", "No response generated")
+                agents_used = synthesis.data.get("agents_used", [])
+                
+                self.logger.info(f"   ✓ Response synthesized")
+                self.logger.info(f"   ✓ Agents involved: {agents_used}")
+                self.logger.info(f"   ✓ Response length: {len(response_text)} chars")
+                
+                # Step 5: Store conversation in Memory Service
+                self.logger.info("💾 STEP 5: Storing conversation in Memory Service...")
+                session_uuid = None
+                try:
+                    if not session_id:
+                        self.logger.debug("   No session provided, creating new session")
+                        session_id = str(UUID(int=0))  # Fallback session
+                    
+                    session_uuid = UUID(session_id) if isinstance(session_id, str) else session_id
+                    self.logger.debug(f"   Session UUID: {session_uuid}")
+                    
+                    # Get or create session
+                    existing_session = await self.postgres_client.get_session(session_uuid)
+                    if not existing_session:
+                        existing_session = await self.postgres_client.create_session(
+                            user_id="anonymous",
+                            session_name=f"Query: {query[:50]}"
+                        )
+                        session_uuid = existing_session.id
+                    
+                    # Get current turn count
+                    history = await self.postgres_client.get_conversation_history(session_uuid, limit=1)
+                    turn_number = len(history) + 1
+                    
+                    # Store user query
+                    user_turn = await self.postgres_client.store_turn(
+                        session_id=session_uuid,
+                        turn_number=turn_number,
+                        role="user",
+                        content=query
+                    )
+                    
+                    # Store assistant response
+                    assistant_turn = await self.postgres_client.store_turn(
+                        session_id=session_uuid,
+                        turn_number=turn_number + 1,
+                        role="assistant",
+                        content=response_text
+                    )
+                    
+                    # Store agent response metadata
+                    await self.postgres_client.store_agent_response(
+                        turn_id=assistant_turn.id,
+                        agent_name="orchestrator",
+                        tools_used=agents_used,
+                        result=response_text
+                    )
+                    
+                    self.logger.info(f"Stored conversation in Memory Service: session={session_uuid}")
+                except Exception as memory_err:
+                    self.logger.warning(f"Failed to store conversation: {memory_err}")
+                    # Don't fail the query if memory storage fails
+                
+                self.logger.info("=" * 80)
+                self.logger.info(f"✅ ORCHESTRATION COMPLETE")
+                self.logger.info(f"   Status: SUCCESS")
+                self.logger.info(f"   Agents: {agents_used}")
+                self.logger.info(f"   Session: {session_uuid}")
+                self.logger.info("=" * 80)
+                
+                return ToolResult(
+                    success=True,
+                    data={
+                        "response": response_text,
+                        "agents_used": agents_used,
+                        "intent": intent,
+                        "entities_found": entities,
+                        "session_id": str(session_uuid) if session_uuid else None
+                    }
+                )
+                
+            except Exception as e:
+                self.logger.error("=" * 80)
+                self.logger.error(f"❌ ORCHESTRATION FAILED")
+                self.logger.error(f"   Error: {str(e)}")
+                self.logger.error("=" * 80)
+                return ToolResult(success=False, error=str(e))
+                
     async def _setup_service(self):
-        """Initialize Redis, PostgreSQL, and HTTP client."""
+        """Initialize Redis, PostgreSQL, HTTP client, and OpenAI."""
         try:
             redis_url = os.getenv("REDIS_URL", "redis://:redis_password@localhost:6379/0")
             self.redis_client = RedisClientManager(redis_url)
@@ -200,6 +480,9 @@ class OrchestratorService(BaseMCPServer):
             
             self.http_client = httpx.AsyncClient(timeout=30.0)
             
+            # Initialize OpenAI
+            openai.api_key = os.getenv("OPENAI_API_KEY")
+            
             self.logger.info("Orchestrator Service initialized successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize orchestrator service: {e}")
@@ -210,43 +493,54 @@ class OrchestratorService(BaseMCPServer):
     # ============================================================================
     
     async def analyze_query_handler(self, query: str) -> ToolResult:
-        """Handle analyze_query tool."""
+        """Use GPT-4 to analyze query intent intelligently."""
         try:
-            # Simple intent classification based on keywords
-            query_lower = query.lower()
+            from openai import OpenAI
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Analyze the user query for a codebase analysis system.
+            Return JSON:
+            {
+            "intent": "search|explain|analyze|index|embed|implement|stats",
+            "entities": ["entity1", "entity2"],
+            "repo_url": "url if indexing" or null,
+            "confidence": 0.0-1.0
+            }"""
+                    },
+                    {"role": "user", "content": query}
+                ],
+                temperature=0.5,
+                max_tokens=200
+            )
             
-            intents = {
-                "search": ["find", "locate", "search", "where", "what is"],
-                "explain": ["explain", "how does", "how is", "describe", "tell me about"],
-                "analyze": ["analyze", "compare", "difference", "similar"],
-                "list": ["list", "show", "get all", "what are"],
-                "implement": ["implement", "build", "create", "write"]
-            }
+            result_text = response.choices[0].message.content
             
-            detected_intent = "search"
-            for intent, keywords in intents.items():
-                if any(kw in query_lower for kw in keywords):
-                    detected_intent = intent
-                    break
-            
-            # Extract entities (simple regex-based)
-            entities = []
-            words = query.split()
-            for word in words:
-                if word[0].isupper() and len(word) > 2:
-                    entities.append(word)
+            try:
+                analysis = json.loads(result_text)
+            except:
+                analysis = {
+                    "intent": "search",
+                    "entities": [],
+                    "repo_url": None,
+                    "confidence": 0.5
+                }
             
             return ToolResult(
                 success=True,
                 data={
                     "query": query,
-                    "intent": detected_intent,
-                    "entities": entities,
-                    "confidence": 0.8
+                    "intent": analysis.get("intent", "search"),
+                    "entities": analysis.get("entities", []),
+                    "repo_url": analysis.get("repo_url"),
+                    "confidence": analysis.get("confidence", 0.5)
                 }
             )
         except Exception as e:
-            self.logger.error(f"Failed to analyze query: {e}")
+            self.logger.error(f"Failed to analyze query with LLM: {e}")
             return ToolResult(success=False, error=str(e))
     
     async def route_to_agents_handler(
@@ -257,12 +551,17 @@ class OrchestratorService(BaseMCPServer):
         """Handle route_to_agents tool."""
         try:
             routing = {
-                "search": ["graph_query"],
-                "explain": ["graph_query", "code_analyst"],
-                "analyze": ["code_analyst", "graph_query"],
-                "list": ["graph_query"],
-                "implement": ["indexer"]
-            }
+                    "search": ["graph_query"],
+                    "explain": ["graph_query", "code_analyst"],
+                    "analyze": ["code_analyst", "graph_query"],
+                    "list": ["graph_query"],
+                    "implement": ["indexer"],
+                    "index": ["indexer"],
+                    "embed": ["indexer"],
+                    "stats": ["indexer"],
+                    "status": ["indexer"],
+                    "query": ["indexer"]
+                }
             
             agents = routing.get(intent, ["graph_query"])
             
@@ -315,8 +614,10 @@ class OrchestratorService(BaseMCPServer):
         tool: str,
         input: Dict[str, Any]
     ) -> ToolResult:
-        """Handle call_agent_tool tool."""
+        """Handle call_agent_tool tool - calls remote agent service."""
         try:
+            self.logger.debug(f"🔗 Calling agent: {agent} | Tool: {tool}")
+            
             # Map agent name to URL
             agent_urls = {
                 "graph_query": self.graph_service_url,
@@ -327,24 +628,38 @@ class OrchestratorService(BaseMCPServer):
             
             url = agent_urls.get(agent)
             if not url:
+                self.logger.error(f"❌ Unknown agent: {agent}")
                 return ToolResult(success=False, error=f"Unknown agent: {agent}")
             
-            # Call agent service
-            execute_url = f"{url}/execute?tool_name={tool}"
+            # Build correct HTTP request - tool_name as query param, input as body
+            execute_url = f"{url}/execute"
             
+            self.logger.debug(f"   URL: {execute_url}")
+            self.logger.debug(f"   Input: {input}")
+
             response = await self.http_client.post(
                 execute_url,
-                json=input,
+                params={"tool_name": tool},  # ← Query parameter, not body
+                json=input,  # ← Only actual tool input in body
                 timeout=30.0
             )
             
+            self.logger.debug(f"   Status: {response.status_code}")
+            
             if response.status_code != 200:
+                error_msg = response.text
+                self.logger.error(f"❌ Agent call failed: {error_msg}")
                 return ToolResult(
                     success=False,
-                    error=f"Agent call failed: {response.text}"
+                    error=f"Agent call failed: {error_msg}"
                 )
             
             result = response.json()
+            
+            if result.get("success"):
+                self.logger.debug(f"   ✓ Agent succeeded")
+            else:
+                self.logger.warning(f"   ⚠️  Agent returned error: {result.get('error')}")
             
             return ToolResult(
                 success=result.get("success", False),
@@ -352,7 +667,7 @@ class OrchestratorService(BaseMCPServer):
                 error=result.get("error")
             )
         except Exception as e:
-            self.logger.error(f"Failed to call agent tool: {e}")
+            self.logger.error(f"❌ Failed to call agent tool: {e}")
             return ToolResult(success=False, error=str(e))
     
     async def synthesize_response_handler(
@@ -360,20 +675,49 @@ class OrchestratorService(BaseMCPServer):
         agent_results: List[Dict[str, Any]],
         original_query: str
     ) -> ToolResult:
-        """Handle synthesize_response tool."""
+        """Handle synthesize_response tool - combines multiple agent outputs."""
         try:
-            # Combine results into coherent response
-            synthesis = f"Based on analysis of '{original_query}':\n\n"
+            if not agent_results:
+                return ToolResult(
+                    success=True,
+                    data={
+                        "response": f"Query: {original_query}\n\nNo agent results available.",
+                        "agents_used": []
+                    }
+                )
             
-            for result in agent_results:
-                agent_name = result.get("agent", "Unknown")
+            # Build comprehensive synthesis
+            lines = [f"**Query:** {original_query}\n"]
+            agents_used = []
+            
+            for idx, result in enumerate(agent_results, 1):
+                agent_name = result.get("agent", result.get("agent_name", "Unknown"))
                 data = result.get("data", {})
-                synthesis += f"**{agent_name}:** {data}\n\n"
+                agents_used.append(agent_name)
+                
+                lines.append(f"\n**[{idx}] {agent_name}:**")
+                
+                # Handle different data formats
+                if isinstance(data, dict):
+                    if data.get("error"):
+                        lines.append(f"Error: {data.get('error')}")
+                    else:
+                        for key, value in data.items():
+                            if value is not None:
+                                if isinstance(value, list) and len(value) > 0:
+                                    lines.append(f"  • {key}: {', '.join(map(str, value[:5]))}")
+                                elif isinstance(value, dict):
+                                    lines.append(f"  • {key}: {len(value)} items")
+                                else:
+                                    lines.append(f"  • {key}: {str(value)[:200]}")
+                else:
+                    lines.append(f"  {str(data)[:300]}")
             
             return ToolResult(
                 success=True,
                 data={
-                    "synthesis": synthesis.strip(),
+                    "response": "\n".join(lines),
+                    "agents_used": list(set(agents_used)),
                     "num_agents": len(agent_results)
                 }
             )
@@ -409,6 +753,70 @@ class OrchestratorService(BaseMCPServer):
             self.logger.error(f"Failed to store agent response: {e}")
             return ToolResult(success=False, error=str(e))
     
+    async def generate_mermaid_handler(
+        self,
+        query_results: List[Dict[str, Any]],
+        entity_name: str,
+        entity_type: str
+    ) -> ToolResult:
+        """Handle generate_mermaid tool."""
+        try:
+            # Extract relationships from results
+            nodes = set()
+            edges = []
+            
+            # Add central node
+            nodes.add(entity_name)
+            
+            # Parse results for relationships
+            for result in query_results:
+                if isinstance(result, dict):
+                    # Look for source/target patterns
+                    source = result.get("source") or result.get("source_name")
+                    target = result.get("target") or result.get("target_name")
+                    rel_type = result.get("relationship_type") or result.get("type")
+                    
+                    if source and target:
+                        nodes.add(source)
+                        nodes.add(target)
+                        edges.append({
+                            "source": source,
+                            "target": target,
+                            "type": rel_type or "RELATES"
+                        })
+            
+            # Generate Mermaid syntax
+            mermaid_code = f"graph TD\n"
+            
+            # Add nodes with styling
+            for node in nodes:
+                if node == entity_name:
+                    mermaid_code += f'    {node}["{node}<br/><b>{entity_type}</b>"]:::primary\n'
+                else:
+                    mermaid_code += f'    {node}["{node}"]\n'
+            
+            # Add edges with labels
+            for edge in edges:
+                source = edge["source"]
+                target = edge["target"]
+                rel_type = edge["type"]
+                mermaid_code += f'    {source} -->|{rel_type}| {target}\n'
+            
+            # Add styling
+            mermaid_code += '\n    classDef primary fill:#FF6B6B,stroke:#FF5252,color:#fff\n'
+            
+            return ToolResult(
+                success=True,
+                data={
+                    "mermaid_code": mermaid_code,
+                    "nodes_count": len(nodes),
+                    "edges_count": len(edges)
+                }
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to generate mermaid: {e}")
+            return ToolResult(success=False, error=str(e))
+
     async def _cleanup_service(self):
         """Cleanup services."""
         if self.http_client:
@@ -476,14 +884,63 @@ async def get_tools():
 
 
 @app.post("/execute")
-async def execute_tool(tool_name: str, tool_input: Dict[str, Any]):
-    """Execute a tool."""
+async def execute_tool(tool_input: Dict[str, Any]):
+    """Execute a tool - intelligently identifies tool from input."""
     if not orchestrator_service:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
-    result = await orchestrator_service.execute_tool(tool_name, tool_input)
-    return result.dict()
+    # Intelligently identify tool from input
+    tool_name = _identify_tool(tool_input)
+    
+    if not tool_name:
+        raise HTTPException(status_code=400, detail="Could not identify tool from input")
+    
+    # Extract actual tool input (remove tool_name if present)
+    actual_input = {k: v for k, v in tool_input.items() if k != "tool_name"}
+    
+    result = await orchestrator_service.execute_tool(tool_name, actual_input)
+    return {
+        "success": result.success,
+        "data": result.data,
+        "error": result.error
+    }
 
+
+def _identify_tool(tool_input: Dict[str, Any]) -> Optional[str]:
+    """Intelligently identify which tool to call based on input keys - checks in order of specificity."""
+    
+    # List of (tool_name, required_keys) ordered by specificity (most specific first)
+    # This ensures tools with specific keys match BEFORE tools with no keys
+    tool_patterns = [
+        ("execute_query", ["query"]),
+        ("synthesize_response", ["agent_results", "original_query"]),
+        ("store_agent_response", ["turn_id", "agent_name", "result"]),
+        ("generate_mermaid", ["query_results", "entity_name", "entity_type"]),
+        ("call_agent_tool", ["agent", "tool", "input"]),
+        ("route_to_agents", ["query", "intent"]),
+        ("get_conversation_context", ["session_id"]),
+        ("analyze_query", ["query"]),
+        ("find_entity", ["name"]),
+        ("index_repository", ["repo_url", "branch"]),
+        # Fallback tools - only match with empty input
+        ("get_index_status", []),
+        ("clear_index", []),
+    ]
+    
+    input_keys = set(tool_input.keys())
+    
+    # Check patterns in order - more specific first
+    for tool_name, required_keys in tool_patterns:
+        if required_keys:
+            # Require ALL keys to be present
+            if all(key in input_keys for key in required_keys):
+                return tool_name
+        else:
+            # Fallback tools - only match if input is completely empty
+            if len(input_keys) == 0:
+                return tool_name
+    
+    return None
 
 if __name__ == "__main__":
     import uvicorn

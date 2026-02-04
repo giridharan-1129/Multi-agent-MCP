@@ -9,12 +9,15 @@ HOW: Export client getters initialized during startup
 from typing import Optional
 import httpx
 
-# Global MCP service URLs (set from environment)
-MEMORY_SERVICE_URL: str = "http://localhost:8005"
-GRAPH_QUERY_SERVICE_URL: str = "http://localhost:8003"
-CODE_ANALYST_SERVICE_URL: str = "http://localhost:8004"
-INDEXER_SERVICE_URL: str = "http://localhost:8002"
-ORCHESTRATOR_SERVICE_URL: str = "http://localhost:8001"
+
+import os
+
+# Global MCP service URLs (read from environment)
+MEMORY_SERVICE_URL: str = os.getenv("MEMORY_SERVICE_URL", "http://localhost:8005")
+GRAPH_QUERY_SERVICE_URL: str = os.getenv("GRAPH_QUERY_SERVICE_URL", "http://localhost:8003")
+CODE_ANALYST_SERVICE_URL: str = os.getenv("CODE_ANALYST_SERVICE_URL", "http://localhost:8004")
+INDEXER_SERVICE_URL: str = os.getenv("INDEXER_SERVICE_URL", "http://localhost:8002")
+ORCHESTRATOR_SERVICE_URL: str = os.getenv("ORCHESTRATOR_SERVICE_URL", "http://localhost:8001")
 
 # HTTP clients
 memory_client: Optional[httpx.AsyncClient] = None

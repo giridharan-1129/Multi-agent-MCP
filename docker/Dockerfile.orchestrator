@@ -1,0 +1,16 @@
+FROM python:3.11-slim as builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential git && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml .
+RUN pip install --user --no-cache-dir -e .
+
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git netcat-openbsd && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /root/.local /root/.local
+ENV PATH=/root/.local/bin:$PATH
+COPY src/ src/
+COPY .env.example .env.example
+EXPOSE 8001
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=5 CMD nc -z localhost 8001 || exit 1
+CMD ["python", "-m", "uvicorn", "src.services.orchestrator_service.main:app", "--host", "0.0.0.0", "--port", "8001"]

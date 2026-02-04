@@ -1,4 +1,3 @@
-version: '3.8'
 services:
   neo4j:
     image: neo4j:5.15
@@ -20,9 +19,10 @@ services:
       - -p
       - password
       - RETURN 1
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 10s
       retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   redis:
@@ -40,9 +40,10 @@ services:
       - -a
       - redis_password
       - ping
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 10s
       retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   postgres:
@@ -61,15 +62,19 @@ services:
       test:
       - CMD-SHELL
       - pg_isready -U postgres
-      interval: 10s
-      timeout: 5s
+      interval: 15s
+      timeout: 10s
       retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   memory_service:
     build:
       context: .
-      dockerfile: src/services/memory_service/Dockerfile
+      dockerfile: docker/Dockerfile.memory
+      args:
+        SERVICE_PATH: src.services.memory_service.main
+        SERVICE_PORT: 8005
     container_name: memory_service
     ports:
     - 8005:8005
@@ -79,6 +84,11 @@ services:
       LOG_LEVEL: INFO
       MEMORY_HOST: 0.0.0.0
       MEMORY_PORT: 8005
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
       - CMD
@@ -86,15 +96,19 @@ services:
       - -z
       - localhost
       - '8005'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   graph_query_service:
     build:
       context: .
-      dockerfile: src/services/graph_query_service/Dockerfile
+      dockerfile: docker/Dockerfile.graph
+      args:
+        SERVICE_PATH: src.services.graph_query_service.main
+        SERVICE_PORT: 8003
     container_name: graph_query_service
     ports:
     - 8003:8003
@@ -105,6 +119,9 @@ services:
       LOG_LEVEL: INFO
       GRAPH_QUERY_HOST: 0.0.0.0
       GRAPH_QUERY_PORT: 8003
+    depends_on:
+      neo4j:
+        condition: service_healthy
     healthcheck:
       test:
       - CMD
@@ -112,15 +129,19 @@ services:
       - -z
       - localhost
       - '8003'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   code_analyst_service:
     build:
       context: .
-      dockerfile: src/services/code_analyst_service/Dockerfile
+      dockerfile: docker/Dockerfile.code
+      args:
+        SERVICE_PATH: src.services.code_analyst_service.main
+        SERVICE_PORT: 8004
     container_name: code_analyst_service
     ports:
     - 8004:8004
@@ -131,6 +152,9 @@ services:
       LOG_LEVEL: INFO
       CODE_ANALYST_HOST: 0.0.0.0
       CODE_ANALYST_PORT: 8004
+    depends_on:
+      neo4j:
+        condition: service_healthy
     healthcheck:
       test:
       - CMD
@@ -138,15 +162,19 @@ services:
       - -z
       - localhost
       - '8004'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   indexer_service:
     build:
       context: .
-      dockerfile: src/services/indexer_service/Dockerfile
+      dockerfile: docker/Dockerfile.indexer
+      args:
+        SERVICE_PATH: src.services.indexer_service.main
+        SERVICE_PORT: 8002
     container_name: indexer_service
     ports:
     - 8002:8002
@@ -157,6 +185,12 @@ services:
       LOG_LEVEL: INFO
       INDEXER_HOST: 0.0.0.0
       INDEXER_PORT: 8002
+      PINECONE_API_KEY: ${PINECONE_API_KEY}
+      COHERE_API_KEY: ${COHERE_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    depends_on:
+      neo4j:
+        condition: service_healthy
     volumes:
     - /tmp/repositories:/tmp/repositories
     healthcheck:
@@ -166,15 +200,19 @@ services:
       - -z
       - localhost
       - '8002'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   orchestrator_service:
     build:
       context: .
-      dockerfile: src/services/orchestrator_service/Dockerfile
+      dockerfile: docker/Dockerfile.orchestrator
+      args:
+        SERVICE_PATH: src.services.orchestrator_service.main
+        SERVICE_PORT: 8001
     container_name: orchestrator_service
     ports:
     - 8001:8001
@@ -188,6 +226,22 @@ services:
       LOG_LEVEL: INFO
       ORCHESTRATOR_HOST: 0.0.0.0
       ORCHESTRATOR_PORT: 8001
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PINECONE_API_KEY: ${PINECONE_API_KEY}
+      COHERE_API_KEY: ${COHERE_API_KEY}
+    depends_on:
+      memory_service:
+        condition: service_healthy
+      graph_query_service:
+        condition: service_healthy
+      code_analyst_service:
+        condition: service_healthy
+      indexer_service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
       - CMD
@@ -195,9 +249,10 @@ services:
       - -z
       - localhost
       - '8001'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   gateway:
@@ -213,6 +268,11 @@ services:
       LOG_LEVEL: INFO
       GATEWAY_HOST: 0.0.0.0
       GATEWAY_PORT: 8000
+    depends_on:
+      orchestrator_service:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
       - CMD
@@ -220,9 +280,10 @@ services:
       - -z
       - localhost
       - '8000'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
   streamlit:
@@ -234,7 +295,20 @@ services:
     - 8501:8501
     environment:
       API_BASE: http://gateway:8000
+      ORCHESTRATOR_SERVICE_URL: http://orchestrator_service:8001
+      INDEXER_SERVICE_URL: http://indexer_service:8002
+      GRAPH_QUERY_SERVICE_URL: http://graph_query_service:8003
       LOG_LEVEL: INFO
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PINECONE_API_KEY: ${PINECONE_API_KEY}
+      COHERE_API_KEY: ${COHERE_API_KEY}
+    depends_on:
+      gateway:
+        condition: service_healthy
+      orchestrator_service:
+        condition: service_healthy
+      indexer_service:
+        condition: service_healthy
     healthcheck:
       test:
       - CMD
@@ -242,9 +316,10 @@ services:
       - -z
       - localhost
       - '8501'
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     networks:
     - codebase_chat
 volumes:

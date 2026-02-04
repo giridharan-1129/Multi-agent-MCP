@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from datetime import datetime
 from uuid import UUID
 import asyncio
+from datetime import datetime
 
 from sqlalchemy import create_engine, Column, String, DateTime, Integer, ARRAY, JSON, ForeignKey, Text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -40,7 +41,8 @@ class SessionModel(Base):
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(String, nullable=False)
     session_name = Column(String)
-    meta = Column(JSONB, default={})
+    created_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime, nullable=True)
     
     # Relationships
     turns = relationship("TurnModel", back_populates="session", cascade="all, delete-orphan")
@@ -139,16 +141,14 @@ class PostgreSQLClientManager:
     async def create_session(
         self,
         user_id: str,
-        session_name: Optional[str] = None,
-        meta: Dict[str, Any] = None
+        session_name: Optional[str] = None
     ) -> ConversationSession:
         """Create a new conversation session."""
         try:
             async with self.async_session_maker() as session:
                 db_session = SessionModel(
                     user_id=user_id,
-                    session_name=session_name,
-                    meta=meta or {}
+                    session_name=session_name
                 )
                 session.add(db_session)
                 await session.commit()
@@ -345,8 +345,7 @@ class PostgreSQLClientManager:
             user_id=db_session.user_id,
             session_name=db_session.session_name,
             created_at=db_session.created_at,
-            closed_at=db_session.closed_at,
-            meta=db_session.meta
+            closed_at=db_session.closed_at
         )
     
     @staticmethod
