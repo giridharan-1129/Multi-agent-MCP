@@ -16,14 +16,12 @@ async def analyze_class_handler(
     try:
         query = """
         MATCH (c:Class {name: $name})
-        OPTIONAL MATCH (c)-[:CONTAINS]->(method:Function)
+        OPTIONAL MATCH (c)-[:HAS_METHOD]->(method:Function)
         OPTIONAL MATCH (c)-[:INHERITS_FROM]->(parent)
         OPTIONAL MATCH (child)-[:INHERITS_FROM]->(c)
-        OPTIONAL MATCH (c)-[:HAS_PARAMETER]->(attr)
         RETURN c, collect(distinct method.name) as methods,
                collect(distinct parent.name) as parents,
-               collect(distinct child.name) as subclasses,
-               collect(distinct attr.name) as attributes
+               collect(distinct child.name) as subclasses
         """
         
         result = await neo4j_service.execute_query(query, {"name": name})
@@ -31,8 +29,14 @@ async def analyze_class_handler(
         if not result:
             return ToolResult(success=False, error=f"Class not found: {name}")
         
-        record = result[0]
-        cls = record[0]
+        record = result[0]  # This is a DICT from Neo4j
+        if isinstance(record, dict):
+            cls = record.get("c")
+        else:
+            cls = record["c"]
+
+        if not cls:
+            return ToolResult(success=False, error=f"Class not found: {name}")
         
         logger.info(f"Class analyzed: {name}")
         
@@ -41,13 +45,13 @@ async def analyze_class_handler(
             data={
                 "name": cls.get("name"),
                 "docstring": cls.get("docstring", ""),
-                "methods": record[1] or [],
-                "parents": record[2] or [],
-                "subclasses": record[3] or [],
-                "attributes": record[4] or [],
+                "methods": record["methods"] or [],
+                "parents": record["parents"] or [],
+                "subclasses": record["subclasses"] or [],
                 "line_count": cls.get("line_count", 0)
             }
         )
+        
     except Exception as e:
         logger.error(f"Failed to analyze class: {e}")
         return ToolResult(success=False, error=str(e))

@@ -18,7 +18,7 @@ async def analyze_function_handler(
         MATCH (f:Function {name: $name})
         OPTIONAL MATCH (f)-[:CALLS]->(called)
         OPTIONAL MATCH (caller)-[:CALLS]->(f)
-        OPTIONAL MATCH (f)-[:HAS_PARAMETER]->(param)
+        OPTIONAL MATCH (f)-[:HAS_PARAM]->(param)
         RETURN f, collect(distinct called.name) as calls, 
                collect(distinct caller.name) as callers,
                collect(distinct param.name) as parameters
@@ -29,8 +29,14 @@ async def analyze_function_handler(
         if not result:
             return ToolResult(success=False, error=f"Function not found: {name}")
         
-        record = result[0]
-        func = record[0]
+        record = result[0]  # This is a DICT from Neo4j
+        if isinstance(record, dict):
+            func = record.get("f")
+        else:
+            func = record["f"]
+
+        if not func:
+            return ToolResult(success=False, error=f"Function not found: {name}")
         
         logger.info(f"Function analyzed: {name}")
         
@@ -39,9 +45,9 @@ async def analyze_function_handler(
             data={
                 "name": func.get("name"),
                 "docstring": func.get("docstring", ""),
-                "calls": record[1] or [],
-                "callers": record[2] or [],
-                "parameters": record[3] or [],
+                "calls": record["calls"] or [],
+                "callers": record["callers"] or [],
+                "parameters": record["parameters"] or [],
                 "complexity": func.get("complexity", "unknown"),
                 "line_count": func.get("line_count", 0)
             }

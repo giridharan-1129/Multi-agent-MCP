@@ -22,7 +22,7 @@ async def trace_imports_handler(
         
         result = await neo4j_service.execute_query(query, {"module": module_name})
         
-        chains = [record[0] for record in result]
+        chains = [record["import_chain"] for record in result]
         
         logger.info(f"Import chains traced for {module_name}: {len(chains)}")
         
@@ -58,7 +58,7 @@ async def find_related_handler(
         
         result = await neo4j_service.execute_query(query, {"name": entity_name})
         
-        related = [record[0] for record in result]
+        related = [record["related.name"] for record in result]
         
         logger.info(f"Related entities found for {entity_name}: {len(related)}")
         

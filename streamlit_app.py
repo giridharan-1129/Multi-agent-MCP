@@ -13,44 +13,6 @@ GATEWAY_URL = os.getenv("GATEWAY_URL", "http://gateway:8000")
 INDEXER_SERVICE = os.getenv("INDEXER_SERVICE_URL", "http://indexer_service:8002")
 ORCHESTRATOR_SERVICE = os.getenv("ORCHESTRATOR_SERVICE_URL", "http://orchestrator_service:8001")
 
-# ============================================================================
-# CACHED API CALLS (Only on page reload, not on reruns)
-# ============================================================================
-
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def get_neo4j_stats():
-    """Fetch Neo4j statistics - cached and only on page reload."""
-    try:
-        res = requests.post(
-            f"{GATEWAY_URL}/api/chat",
-            json={"query": "What are the Neo4j database statistics?"},
-            timeout=10
-        )
-        if res.ok:
-            data = res.json()
-            if data.get("success"):
-                return {"success": True, "response": data.get("response", "")}
-    except Exception as e:
-        pass
-    return {"success": False, "response": f"Stats unavailable: {str(e)[:50]}"}
-
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def get_pinecone_stats():
-    """Fetch Pinecone statistics - cached and only on page reload."""
-    try:
-        res = requests.post(
-            f"{GATEWAY_URL}/api/chat",
-            json={"query": "What are the Pinecone vector database statistics?"},
-            timeout=10
-        )
-        if res.ok:
-            data = res.json()
-            if data.get("success"):
-                return {"success": True, "response": data.get("response", "")}
-    except Exception as e:
-        pass
-    return {"success": False, "response": f"Stats unavailable: {str(e)[:50]}"}
-
 # Page config
 st.set_page_config(
     page_title="Agentic Codebase Chat",
@@ -113,6 +75,14 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
+if "neo4j_stats" not in st.session_state:
+    st.session_state.neo4j_stats = None
+if "neo4j_stats_timestamp" not in st.session_state:
+    st.session_state.neo4j_stats_timestamp = None
+if "pinecone_stats" not in st.session_state:
+    st.session_state.pinecone_stats = None
+if "pinecone_stats_timestamp" not in st.session_state:
+    st.session_state.pinecone_stats_timestamp = None
 
 # ============================================================================
 # TABS
@@ -162,52 +132,99 @@ with tab_chat:
             st.rerun()
     
     st.divider()
-    with st.sidebar:
-        # Neo4j Stats
-        st.subheader("📊 Neo4j Stats")
+with st.sidebar:
+    # Neo4j Stats
+    st.subheader("📊 Neo4j Stats")
+    
+    col_stats, col_refresh = st.columns([3, 1])
+    with col_refresh:
+        if st.button("🔄", key="refresh_neo4j_btn", help="Refresh Neo4j stats"):
+            st.session_state.neo4j_stats = None
+            st.session_state.neo4j_stats_timestamp = None
+    
+    # Fetch stats if not cached
+    if st.session_state.neo4j_stats is None:
         try:
-            res = requests.post(
-                f"{GATEWAY_URL}/api/chat",
-                json={"query": "What are the Neo4j database statistics?"},
+            res = requests.get(
+                f"{GATEWAY_URL}/api/stats/neo4j",
                 timeout=10
             )
             if res.ok:
                 data = res.json()
                 if data.get("success"):
-                    response = data.get("response", "")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Classes", "N/A")
-                    with col2:
-                        st.metric("Functions", "N/A")
-                    with col3:
-                        st.metric("Files", "N/A")
-                    st.caption("Stats available via Database Statistics section below")
-        except Exception as e:
-            st.caption(f"Neo4j stats unavailable: {str(e)[:50]}")
-        
-        st.divider()
-        
-        # Pinecone Stats
-        st.subheader("⚡ Pinecone Embeddings")
-        try:
-            res = requests.post(
-                f"{GATEWAY_URL}/api/chat",
-                json={"query": "What are the Pinecone vector database statistics?"},
-                timeout=10
-            )
-            if res.ok:
-                data = res.json()
-                if data.get("success"):
-                    response = data.get("response", "")
-                    st.metric("Vectors Stored", "N/A")
-                    st.metric("Dimension", "1536")
-                    st.caption("Index: code-search")
-                    st.caption("Stats available via Pinecone Embeddings section below")
+                    st.session_state.neo4j_stats = data.get("data", {})
+                    import time
+                    st.session_state.neo4j_stats_timestamp = time.time()
                 else:
-                    st.caption("Pinecone not configured")
+                    st.session_state.neo4j_stats = {"error": data.get("error", "Unknown error")}
+            else:
+                st.session_state.neo4j_stats = {"error": "Request failed"}
         except Exception as e:
-            st.caption(f"Pinecone stats unavailable: {str(e)[:50]}")  
+            st.session_state.neo4j_stats = {"error": str(e)[:50]}
+    
+    # Display cached stats
+    if st.session_state.neo4j_stats and "error" not in st.session_state.neo4j_stats:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Classes", st.session_state.neo4j_stats.get("classes", 0))
+        with col2:
+            st.metric("Functions", st.session_state.neo4j_stats.get("functions", 0))
+        with col3:
+            st.metric("Files", st.session_state.neo4j_stats.get("files", 0))
+        st.caption(f"Total: {st.session_state.neo4j_stats.get('total_nodes', 0)} nodes")
+    else:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Classes", "N/A")
+        with col2:
+            st.metric("Functions", "N/A")
+        with col3:
+            st.metric("Files", "N/A")
+        if st.session_state.neo4j_stats and "error" in st.session_state.neo4j_stats:
+            st.caption(f"Error: {st.session_state.neo4j_stats['error']}")
+    
+    st.divider()
+
+    # Pinecone Stats
+    st.subheader("⚡ Pinecone Embeddings")
+
+    col_stats, col_refresh = st.columns([3, 1])
+    with col_refresh:
+        if st.button("🔄", key="refresh_pinecone_btn", help="Refresh Pinecone stats"):
+            st.session_state.pinecone_stats = None
+            st.session_state.pinecone_stats_timestamp = None
+
+    # Fetch stats if not cached
+    if st.session_state.pinecone_stats is None:
+        try:
+            res = requests.get(
+                f"{GATEWAY_URL}/api/stats/pinecone",
+                timeout=10
+            )
+            if res.ok:
+                data = res.json()
+                if data.get("success"):
+                    st.session_state.pinecone_stats = data.get("data", {})
+                    import time
+                    st.session_state.pinecone_stats_timestamp = time.time()
+                else:
+                    st.session_state.pinecone_stats = {"error": data.get("message", "Pinecone unavailable")}
+            else:
+                st.session_state.pinecone_stats = {"error": "Request failed"}
+        except Exception as e:
+            st.session_state.pinecone_stats = {"error": str(e)[:50]}
+
+    # Display cached stats
+    if st.session_state.pinecone_stats and "error" not in st.session_state.pinecone_stats:
+        st.metric("Vectors Stored", st.session_state.pinecone_stats.get("vectors_stored", 0))
+        st.metric("Dimension", st.session_state.pinecone_stats.get("dimension", 1536))
+        st.caption(f"Index: {st.session_state.pinecone_stats.get('index_name', 'code-search')}")
+    else:
+        st.metric("Vectors Stored", "N/A")
+        st.metric("Dimension", "1536")
+        st.caption("Index: code-search")
+        if st.session_state.pinecone_stats and "error" in st.session_state.pinecone_stats:
+            st.caption(f"Status: {st.session_state.pinecone_stats['error']}")
 
     if st.session_state.get("indexing_active", False):
         st.markdown("### 📦 Indexing Progress")
@@ -262,7 +279,65 @@ with tab_chat:
                 st.error(f"❌ Error: {str(e)}")
             st.session_state.indexing_active = False
         
-        st.stop()  # ← CRITICAL: Stop execution here after indexing
+        st.stop()  # Show Embedding Progress - ONLY when embedding_active is True
+    if st.session_state.get("embedding_active", False):
+        st.markdown("### ⚡ Embedding Progress")
+        
+        progress_placeholder = st.empty()
+        status_container = st.container()
+        
+        try:
+            embed_url = st.session_state.get("last_repo_url")
+            repo_id = embed_url.split("/")[-1] if embed_url else "fastapi"  # Extract repo name
+            
+            if embed_url:
+                with progress_placeholder:
+                    st.progress(25, text="Sending embedding request...")
+                
+                with status_container:
+                    with st.spinner("Embedding repository to Pinecone..."):
+                        embed_res = requests.post(
+                            f"{ORCHESTRATOR_SERVICE}/execute",
+                            json={
+                                "query": f"Embed this repository: {embed_url} with repo_id: {repo_id}"
+                            },
+                            timeout=300
+                        )
+                
+                if embed_res.ok:
+                    embed_data = embed_res.json()
+                    
+                    with progress_placeholder:
+                        st.progress(100, text="Embedding Complete!")
+                    
+                    with status_container:
+                        if embed_data.get("success") or (embed_data.get("data") and not embed_data.get("error")):
+                            response_msg = embed_data.get("response") or embed_data.get("data", {}).get("statistics", {})
+                            st.success("✅ Repository Embedded Successfully!")
+                            st.write(f"**Response:** {response_msg}")
+                            
+                            st.session_state.embedding_active = False
+                            st.session_state.embeddings_created = True
+                            time.sleep(2)
+                            st.rerun()
+                        else:
+                            st.error(f"⚠️ Embedding failed: {embed_data.get('error', 'Unknown error')}")
+                            st.session_state.embedding_active = False
+                else:
+                    with status_container:
+                        st.error(f"⚠️ Embedding failed: {embed_res.text}")
+                    st.session_state.embedding_active = False
+                        
+        except requests.exceptions.Timeout:
+            with status_container:
+                st.error("⏱️ Embedding timeout - large repository")
+            st.session_state.embedding_active = False
+        except Exception as e:
+            with status_container:
+                st.error(f"❌ Error: {str(e)}")
+            st.session_state.embedding_active = False
+        
+        st.stop()  # Stop execution here after embedding# ← CRITICAL: Stop execution here after indexing
         
 
 
@@ -290,12 +365,18 @@ with message_container:
             st.write(msg["content"])
             
             if msg["role"] == "assistant":
+                # Store response data from last API call
+                response_data = msg.get("response_data", {})
+                retrieved_sources = response_data.get("retrieved_sources", [])
+                sources_count = response_data.get("sources_count", 0)
+                scenario = response_data.get("scenario", "unknown")
+                reranked = response_data.get("reranked_results", False)
+                
                 # AGENTIC AI MESSAGE
                 if "thinking_process" in msg:
                     thinking_steps = msg.get("thinking_process", [])
                     tools_used = msg.get("tools_used", [])
                     iterations = msg.get("iterations", 0)
-                    retrieved_context = msg.get("retrieved_context", [])
                     
                     st.divider()
                     
@@ -303,41 +384,41 @@ with message_container:
                         for i, step in enumerate(thinking_steps, 1):
                             st.caption(f"**Step {i}:** {step[:300]}...")
                     
-                    # SHOW RETRIEVED CONTEXT FROM AGENTIC SEARCH
-                    if retrieved_context:
-                        embeddings_sources = [s for s in retrieved_context if s.get('source_type') == 'pinecone' or s.get('type') == 'code_chunk']
-                        neo4j_sources = [s for s in retrieved_context if s.get('source_type') == 'neo4j' or s.get('type') == 'relationship']
+                    # SHOW RETRIEVED SOURCES FROM MESSAGE HISTORY
+                    retrieved_sources = msg.get("retrieved_sources", [])
+                    if retrieved_sources:
+                        pinecone_sources = [s for s in retrieved_sources if s.get('source_type') == 'pinecone']
+                        neo4j_sources = [s for s in retrieved_sources if s.get('source_type') == 'neo4j']
                         
-                        if embeddings_sources:
-                            st.write("**📝 Pinecone Code Chunks (Semantic Search)**")
-                            for j, source in enumerate(embeddings_sources, 1):
+                        if pinecone_sources:
+                            st.write("**📝 Code Chunks (Semantic Search)**")
+                            for j, source in enumerate(pinecone_sources, 1):
                                 with st.container(border=True):
-                                    col1, col2 = st.columns([0.85, 0.15])
+                                    col1, col2 = st.columns([0.8, 0.2])
                                     
                                     with col1:
                                         st.markdown(f"""
-**{source.get('file_name', 'unknown')}** | {source.get('language', 'python')}
-- **Lines:** {source.get('lines', 'N/A')}
-- **Relevance:** {source.get('relevance', 'N/A')}
-- **Start:** {source.get('start_line', 'N/A')} | **End:** {source.get('end_line', 'N/A')}
+**{j}. {source.get('file_name', 'unknown')}**s
+- **Language:** {source.get('language', 'python')}
+- **Lines:** {source.get('start_line', '?')}-{source.get('end_line', '?')}
+- **Relevance:** {round(source.get('relevance_score', 0) * 100)}% {'(reranked)' if source.get('reranked') else ''}
                                         """)
                                     
                                     with col2:
-                                        if st.button("📂 View", key=f"agentic_history_view_{j}"):
-                                            st.session_state[f"show_agentic_history_{j}"] = True
+                                        if st.button("📂 View", key=f"history_source_{j}"):
+                                            st.session_state[f"show_history_source_{j}"] = True
                                 
-                                if st.session_state.get(f"show_agentic_history_{j}"):
-                                    st.code(source.get('content', 'N/A'), language=source.get('language', 'python'))
+                                if st.session_state.get(f"show_history_source_{j}"):
+                                    st.code(source.get('content', 'No content'), language=source.get('language', 'python'))
                         
                         if neo4j_sources:
-                            st.write("**🔗 Neo4j Entity Relationships (Graph)**")
+                            st.write("**🔗 Neo4j Entities**")
                             for k, source in enumerate(neo4j_sources, 1):
                                 with st.container(border=True):
                                     st.markdown(f"""
-**{source.get('entity_type', 'Unknown')}:** `{source.get('entity', 'unknown')}`
-- **Dependencies:** {', '.join(source.get('dependencies', [])[:3]) or 'None'}
-- **Used by:** {', '.join(source.get('used_by', [])[:3]) or 'Not directly used'}
+**{source.get('entity_type', 'Unknown')}:** `{source.get('entity_name', 'unknown')}`
 - **Module:** {source.get('module', 'N/A')}
+- **Line:** {source.get('line_number', 'N/A')}
                                     """)
                     
                     if tools_used:
@@ -375,11 +456,20 @@ if query:
                 data = res.json()
                 
                 if data.get("success"):
+                    # DEBUG: Print the full response
+                    st.write("DEBUG - Full Response:")
+                    st.json(data)
                     answer = data.get("response", "No response generated")
                     intent = data.get("intent", "search")
                     entities_found = data.get("entities_found", [])
                     agents_used = data.get("agents_used", [])
                     session_id = data.get("session_id")
+                    
+                    # Extract sources from the correct location
+                    retrieved_sources = data.get("retrieved_sources", [])
+                    sources_count = data.get("sources_count", 0)
+                    reranked_results = data.get("reranked_results", False)
+                    scenario = data.get("scenario", "unknown")
                     
                     if session_id:
                         st.session_state.session_id = session_id
@@ -405,19 +495,120 @@ if query:
                         for i, step in enumerate(thinking_steps, 1):
                             st.caption(f"**Step {i}:** {step}")
                     
-                    # SHOW TOOLS USED
-                    if agents_used:
-                        st.write("**🔧 Agents Used:**")
-                        tool_str = " ".join([f'<span class="agent-badge">{a}</span>' for a in agents_used])
-                        st.markdown(tool_str, unsafe_allow_html=True)
+                    # ========================================================================
+                    # SOURCES SECTION - Display Neo4j and Pinecone sources
+                    # ======================================================================== 
+                    st.divider()
                     
+                    if retrieved_sources and sources_count > 0:
+                        st.markdown(f"### 📚 **Retrieved Sources** ({sources_count} found)")
+                        
+                        # Separate sources by type
+                        pinecone_sources = [s for s in retrieved_sources if s.get("source_type") == "pinecone"]
+                        neo4j_sources = [s for s in retrieved_sources if s.get("source_type") == "neo4j"]
+                        
+                        # Display metadata
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("📍 Code Chunks", len(pinecone_sources))
+                        with col2:
+                            st.metric("🔗 Graph Entities", len(neo4j_sources))
+                        with col3:
+                            rerank_badge = "✅ Reranked" if reranked_results else "📊 Semantic"
+                            st.metric("🤖 AI Method", rerank_badge)
+                        
+                        st.caption(f"Scenario: `{scenario}` | Total: {sources_count} sources")
+                        
+                        # ====================================================================
+                        # NEO4J SOURCES (Entity relationships from knowledge graph)
+                        # ====================================================================
+                        if neo4j_sources:
+                            st.markdown("#### 🔗 **Neo4j Knowledge Graph - Entity Information**")
+                            
+                            for idx, source in enumerate(neo4j_sources, 1):
+                                with st.container(border=True):
+                                    col_info, col_expand = st.columns([0.9, 0.1])
+                                    
+                                    with col_info:
+                                        entity_name = source.get("entity_name", "Unknown")
+                                        entity_type = source.get("entity_type", "Unknown")
+                                        module = source.get("module", "N/A")
+                                        line_num = source.get("line_number", "N/A")
+                                        
+                                        st.markdown(f"""
+            **{entity_name}** `{entity_type}`
+            - **Module:** `{module}`
+            - **Line:** {line_num}
+            - **Type:** {entity_type}
+                                        """)
+                                    
+                                    with col_expand:
+                                        if st.button("📖", key=f"neo4j_view_{idx}", help="View details"):
+                                            st.session_state[f"show_neo4j_{idx}"] = True
+                                    
+                                    if st.session_state.get(f"show_neo4j_{idx}"):
+                                        st.json(source.get("properties", {}), expanded=False)
+                        
+                        # ====================================================================
+                        # PINECONE SOURCES (Code chunks from semantic search)
+                        # ====================================================================
+                        if pinecone_sources:
+                            st.markdown("#### 🔍 **Pinecone Semantic Search - Code Snippets**")
+                            
+                            for idx, chunk in enumerate(pinecone_sources, 1):
+                                with st.container(border=True):
+                                    col_file, col_score, col_expand = st.columns([0.6, 0.2, 0.2])
+                                    
+                                    with col_file:
+                                        file_name = chunk.get("file_name", "unknown")
+                                        start_line = chunk.get("start_line", 0)
+                                        end_line = chunk.get("end_line", 0)
+                                        language = chunk.get("language", "python")
+                                        
+                                        st.markdown(f"""
+            📄 **{file_name}**
+            - **Lines:** {start_line}-{end_line}
+            - **Language:** {language}
+                                        """)
+                                    
+                                    with col_score:
+                                        relevance = chunk.get("relevance_score", 0)
+                                        confidence = chunk.get("confidence", 0)
+                                        reranked_badge = "✅" if chunk.get("reranked") else "📊"
+                                        
+                                        st.metric("Relevance", f"{relevance:.2f}", label_visibility="collapsed")
+                                        st.metric("Confidence", f"{confidence:.2f}", label_visibility="collapsed")
+                                        st.caption(f"{reranked_badge} {chunk.get('lines', 'N/A')}")
+                                    
+                                    with col_expand:
+                                        if st.button("💻", key=f"pinecone_view_{idx}", help="View code"):
+                                            st.session_state[f"show_pinecone_{idx}"] = True
+                                    
+                                    if st.session_state.get(f"show_pinecone_{idx}"):
+                                        code_content = chunk.get("content") or chunk.get("preview", "")
+                                        if code_content:
+                                            st.code(code_content, language=language)
+                                        else:
+                                            st.info("No code content available")
+                        
+                        st.divider()
+                    else:
+                        st.info("ℹ️ No sources retrieved for this query")
+                    
+                    # Store in session state
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
                         "thinking_process": thinking_steps,
                         "tools_used": agents_used,
                         "iterations": len(thinking_steps),
-                        "retrieved_context": []
+                        "retrieved_context": [],
+                        "response_data": {
+                            "retrieved_sources": retrieved_sources,
+                            "sources_count": sources_count,
+                            "scenario": scenario,
+                            "reranked_results": reranked_results
+                        }
                     })
                     st.rerun()
                 else:
@@ -426,11 +617,12 @@ if query:
                     st.rerun()
             else:
                 st.error(f"Error: {res.text}")
-    
+
     except requests.exceptions.Timeout:
         st.error("⏱️ Request timeout")
     except Exception as e:
         st.error(f"Error: {str(e)}")
+
 
 
 # ============================================================================
@@ -640,24 +832,34 @@ with tab_graph:
                     st.warning("No results to display")
             
             
-            # STEP 3: Render interactive network graph
-            # STEP 3: RENDER USING MERMAID INSTEAD
+            # STEP 3: Call generate_mermaid tool on Orchestrator
             st.divider()
 
             with st.spinner(f"⏳ Step 3: Generating Mermaid diagram..."):
                 try:
-                    # Call your existing mermaid endpoint
+                    # Call generate_mermaid tool directly on Orchestrator
                     mermaid_response = requests.post(
-                        f"{GATEWAY_URL}/api/chat",
+                        f"{ORCHESTRATOR_SERVICE}/execute",
                         json={
-                            "query": f"Generate Mermaid diagram for {selected_type} entity '{entity_name}' with these results: {str(all_results)[:500]}"
+                            "tool_name": "generate_mermaid",
+                            "tool_input": {
+                                "query_results": all_results,
+                                "entity_name": entity_name,
+                                "entity_type": selected_type
+                            }
                         },
                         timeout=60
                     )
                     
                     if mermaid_response.ok:
                         mermaid_data = mermaid_response.json()
-                        mermaid_code = mermaid_data.get("data", {}).get("mermaid_code", "") if mermaid_data.get("success") else ""
+                        
+                        # Extract mermaid_code from ToolResult response
+                        mermaid_code = ""
+                        if mermaid_data.get("success"):
+                            mermaid_code = mermaid_data.get("data", {}).get("mermaid_code", "")
+                        elif isinstance(mermaid_data, dict) and "data" in mermaid_data:
+                            mermaid_code = mermaid_data.get("data", {}).get("mermaid_code", "")
                         
                         if mermaid_code and mermaid_code.strip():
                             st.success("✅ Diagram generated!")
@@ -672,11 +874,11 @@ with tab_graph:
                                 st.code(mermaid_code, language="mermaid")
                         else:
                             st.warning("No diagram code generated")
-                            st.info(f"Query returned {len(all_results)} results but no relationships found for diagram")
+                            st.info(f"Query returned {len(all_results)} results but Mermaid tool produced no diagram")
                     else:
-                        st.error(f"Mermaid generation failed: {mermaid_response.text}")
+                        st.error(f"Mermaid tool failed: {mermaid_response.text}")
                 except Exception as e:
-                    st.error(f"❌ Failed: {str(e)}")
+                    st.error(f"❌ Failed to call Mermaid tool: {str(e)}")
 
 # ============================================================================
 # TAB 3: TOOLS

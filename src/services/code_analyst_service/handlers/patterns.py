@@ -36,7 +36,7 @@ async def find_patterns_handler(
         result = await neo4j_service.execute_query(query, params)
         
         patterns = [
-            {"name": record[0], "pattern": record[1], "type": record[2]}
+            {"name": record["name"], "pattern": record["pattern"], "type": record["type"]}
             for record in result
         ]
         

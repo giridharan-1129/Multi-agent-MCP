@@ -19,7 +19,40 @@ from .ast_utils import parse_and_extract_entities, count_entity_types
 
 logger = get_logger(__name__)
 
+def _infer_source_type(rel_type: str, source_name: str) -> str:
+    """Infer source node type from relationship type."""
+    mapping = {
+        "INHERITS_FROM": "Class",
+        "CONTAINS": "Class",  # Class contains Method
+        "DECORATED_BY": "Function",
+        "CALLS": "Function",
+        "HAS_PARAM": "Function",
+        "RETURNS": "Function",
+        "HAS_METHOD": "Class",
+        "IMPORTS": "Package",
+        "DEFINES": "File",
+        "DOCUMENTED_BY": "Function",
+    }
+    return mapping.get(rel_type, "Unknown")
 
+
+def _infer_target_type(rel_type: str, target_name: str) -> str:
+    """Infer target node type from relationship type."""
+    mapping = {
+        "INHERITS_FROM": "Class",
+        "CONTAINS": "Method",  # Class contains Method
+        "DECORATED_BY": "Function",
+        "CALLS": "Function",
+        "HAS_PARAM": "Parameter",
+        "RETURNS": "Type",
+        "HAS_METHOD": "Method",
+        "IMPORTS": "Package",
+        "DEFINES": "Class",  # or Function
+        "DOCUMENTED_BY": "Docstring",
+    }
+    return mapping.get(rel_type, "Unknown")
+
+    
 async def index_repository_handler(
     repo_url: str,
     branch: str,
@@ -125,11 +158,15 @@ async def index_repository_handler(
                 # Create relationships in Neo4j
                 for rel in relationships:
                     try:
+                        # Infer source/target types from relationship type
+                        source_type = _infer_source_type(rel["type"], rel.get("source"))
+                        target_type = _infer_target_type(rel["type"], rel.get("target"))
+                        
                         await neo4j_service.create_relationship(
                             source_name=rel["source"],
-                            source_label=rel.get("source_type", "Unknown"),
+                            source_label=source_type,
                             target_name=rel["target"],
-                            target_label=rel.get("target_type", "Unknown"),
+                            target_label=target_type,
                             rel_type=rel["type"]
                         )
                     except Exception as e:
@@ -166,3 +203,5 @@ async def index_repository_handler(
     except Exception as e:
         logger.error(f"❌ Repository indexing failed: {e}")
         return ToolResult(success=False, error=str(e))
+
+

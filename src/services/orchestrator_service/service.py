@@ -18,6 +18,7 @@ from .handlers import (
     call_agent_tool,
     synthesize_response,
     execute_query,
+    generate_mermaid,
 )
 
 logger = get_logger(__name__)
@@ -126,8 +127,31 @@ class OrchestratorService(BaseMCPServer):
             handler=self._synthesize_response_handler
         )
         
-        self.logger.info("✅ Registered 5 orchestration tools (execute_query + 4 internal)")
-    # Wrapper methods that delegate to handlers
+        self.register_tool(
+            name="generate_mermaid",
+            description="Generate Mermaid diagram from Neo4j query results",
+            input_schema={
+                "type": "object",
+                        "properties": {
+                            "query_results": {
+                                "type": "array",
+                                "description": "Query results from Neo4j"
+                            },
+                            "entity_name": {
+                                "type": "string",
+                                "description": "Central entity name"
+                            },
+                            "entity_type": {
+                                "type": "string",
+                                "description": "Entity type (Class, Function, etc)"
+                            }
+                        },
+                        "required": ["query_results", "entity_name", "entity_type"]
+                    },
+                    handler=self._generate_mermaid_handler
+                )
+                
+        self.logger.info("✅ Registered 6 orchestration tools (execute_query + 5 internal)")    
     # ========================================================================
     # HANDLER WRAPPERS - Bridge between FastAPI endpoints and handler logic
     # ========================================================================
@@ -173,6 +197,15 @@ class OrchestratorService(BaseMCPServer):
             agent_results=agent_results,
             original_query=original_query
         )
+
+    async def _generate_mermaid_handler(self, query_results: list, entity_name: str, entity_type: str) -> ToolResult:
+        """Wrapper for generate_mermaid handler."""
+        return await generate_mermaid(
+            query_results=query_results,
+            entity_name=entity_name,
+            entity_type=entity_type
+        )
+    
     def _select_tool_for_agent(self, agent_name: str, intent: str, entities: list) -> str:
         """
         Select appropriate tool for agent based on intent.

@@ -24,13 +24,19 @@ app = FastAPI(
 graph_service: GraphQueryService = None
 
 
+async def init_app():
+    """Initialize app on startup."""
+    global graph_service
+    if graph_service is None:
+        graph_service = GraphQueryService()
+        await graph_service.initialize()
+        logger.info("Graph Query Service started")
+
+
 @app.on_event("startup")
 async def startup():
     """Initialize graph query service on startup."""
-    global graph_service
-    graph_service = GraphQueryService()
-    await graph_service.initialize()
-    logger.info("Graph Query Service started")
+    await init_app()
 
 
 @app.on_event("shutdown")
@@ -40,17 +46,6 @@ async def shutdown():
     if graph_service:
         await graph_service.shutdown()
     logger.info("Graph Query Service stopped")
-
-
-# ============================================================================
-# FastAPI App Setup
-# ============================================================================
-
-app = FastAPI(
-    title="Graph Query Service",
-    description="MCP Server for Neo4j knowledge graph operations",
-    version="1.0.0"
-)
 
 
 # ============================================================================
@@ -95,7 +90,7 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]):
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     result = await graph_service.execute_tool(tool_name, tool_input)
-    return result.dict()
+    return result.__dict__
 
 
 # ============================================================================

@@ -7,6 +7,7 @@ Handles:
 - Pinecone storage
 - Semantic search with reranking
 """
+import asyncio
 
 from typing import Any, Dict
 from ....shared.mcp_server import ToolResult
@@ -34,10 +35,39 @@ async def embed_repository_handler(
     4. Upsert to Pinecone
     """
     try:
-        if not pinecone_service or not pinecone_service.index:
+        if not pinecone_service:
             return ToolResult(
                 success=False,
-                error="Pinecone service not initialized. Set PINECONE_API_KEY."
+                error="Pinecone service not initialized"
+            )
+        
+        # Check if Pinecone is actually available
+        try:
+            if not hasattr(pinecone_service, 'index') or pinecone_service.index is None:
+                logger.warning("Pinecone index not available")
+                return ToolResult(
+                    success=True,
+                    data={
+                        "query": query,
+                        "repo_id": repo_id,
+                        "chunks": [],
+                        "count": 0,
+                        "reranked": False,
+                        "message": "Pinecone not initialized - no semantic search available"
+                    }
+                )
+        except AttributeError:
+            logger.warning("Pinecone service attribute error")
+            return ToolResult(
+                success=True,
+                data={
+                    "query": query,
+                    "repo_id": repo_id,
+                    "chunks": [],
+                    "count": 0,
+                    "reranked": False,
+                    "message": "Pinecone service error"
+                }
             )
         
         logger.info(f"🚀 Embedding repository: {repo_url} (ID: {repo_id})")
@@ -101,7 +131,6 @@ async def embed_repository_handler(
         logger.error(f"❌ Embedding failed: {e}")
         return ToolResult(success=False, error=str(e))
 
-
 async def semantic_search_handler(
     query: str,
     repo_id: str,
@@ -110,6 +139,12 @@ async def semantic_search_handler(
 ) -> ToolResult:
     """
     Semantic search in Pinecone with Cohere reranking.
+    
+    Returns chunks with:
+    - original_score: Pinecone embedding similarity (0-1)
+    - relevance_score: Cohere reranked score (if available)
+    - confidence: Average confidence (0-1)
+    - reranked: Boolean flag
     """
     try:
         if not pinecone_service or not pinecone_service.index:
@@ -120,30 +155,136 @@ async def semantic_search_handler(
         
         logger.info(f"🔍 Searching: '{query}' in repo {repo_id}")
         
-        # Search with reranking
-        citations = await pinecone_service.search_with_reranking(
+        # Step 1: Semantic search
+        logger.info(f"📍 Step 1: Pinecone semantic search...")
+        search_results = await pinecone_service.semantic_search(
             query=query,
             repo_id=repo_id,
             top_k=top_k
         )
         
-        # Format chunks
-        chunks = [
-            {
-                "chunk_id": c.get("chunk_id"),
-                "file_path": c.get("file"),
-                "file_name": c.get("file").split("/")[-1],
-                "start_line": int(c.get("lines", "0-0").split("-")[0]),
-                "end_line": int(c.get("lines", "0-0").split("-")[1]),
-                "language": c.get("language", "python"),
-                "preview": c.get("preview", ""),
-                "relevance_score": c.get("relevance", 0),
-                "lines": c.get("lines")
-            }
-            for c in citations
-        ]
+        if not search_results:
+            logger.warning(f"⚠️ No search results found")
+            return ToolResult(
+                success=True,
+                data={
+                    "query": query,
+                    "repo_id": repo_id,
+                    "chunks": [],
+                    "count": 0,
+                    "reranked": False
+                }
+            )
         
-        logger.info(f"✅ Found {len(chunks)} relevant chunks")
+        # Format initial chunks with original scores
+        # Format initial chunks with original scores
+        chunks = []
+        for c in search_results:
+            try:
+                file_path = c.get("file") or "unknown"
+                lines_str = c.get("lines") or "0-0"
+                
+                # Split file path safely
+                file_name = file_path.split("/")[-1] if file_path else "unknown"
+                
+                # Split lines safely
+                lines_parts = lines_str.split("-")
+                start_line = int(lines_parts[0]) if len(lines_parts) > 0 else 0
+                end_line = int(lines_parts[1]) if len(lines_parts) > 1 else 0
+                
+                chunk = {
+                    "chunk_id": c.get("chunk_id"),
+                    "file_path": file_path,
+                    "file_name": file_name,
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "language": c.get("language", "python"),
+                    "preview": c.get("preview", ""),
+                    "original_score": round(c.get("relevance", 0), 3),
+                    "relevance_score": round(c.get("relevance", 0), 3),
+                    "confidence": round(c.get("relevance", 0), 3),
+                    "lines": lines_str,
+                    "reranked": False
+                }
+                chunks.append(chunk)
+            except Exception as chunk_err:
+                logger.warning(f"⚠️ Skipping malformed chunk: {chunk_err}")
+                continue
+        
+        
+        logger.info(f"✅ Got {len(chunks)} initial results from Pinecone")
+        
+        # Step 2: Cohere reranking (if available)
+        reranked = False
+        if pinecone_service.cohere_client and len(chunks) > 0:
+            try:
+                logger.info(f"🔄 Step 2: Reranking with Cohere...")
+                
+                # Prepare documents for reranking
+                documents = []
+                for chunk in chunks:
+                    doc = f"File: {chunk['file_path']}\n"
+                    doc += f"Lines {chunk['start_line']}-{chunk['end_line']}\n"
+                    doc += f"Language: {chunk['language']}\n"
+                    doc += f"Content: {chunk['preview']}"
+                    documents.append(doc)
+                
+                # Call Cohere rerank
+                logger.info(f"📤 Sending {len(documents)} documents to Cohere...")
+                response = await asyncio.to_thread(
+                    pinecone_service.cohere_client.rerank,
+                    model="rerank-english-v3.0",
+                    query=query,
+                    documents=documents,
+                    top_n=min(len(chunks), top_k)
+                )
+                
+                if response and response.results:
+                    logger.info(f"✅ Cohere returned {len(response.results)} reranked results")
+                    
+                    # Map reranked results
+                    reranked_map = {}
+                    for rank_result in response.results:
+                        idx = rank_result.index
+                        score = rank_result.relevance_score
+                        if idx < len(chunks):
+                            reranked_map[idx] = round(score, 3)
+                    
+                    # Update chunks with reranking scores
+                    for idx, chunk in enumerate(chunks):
+                        if idx in reranked_map:
+                            cohere_score = reranked_map[idx]
+                            original_score = chunk["original_score"]
+                            # Average the two scores
+                            chunk["relevance_score"] = cohere_score  # Primary: Cohere score
+                            chunk["confidence"] = round((original_score + cohere_score) / 2, 3)
+                            chunk["reranked"] = True
+                            logger.debug(
+                                f"📊 Reranked: {chunk['file_name']} "
+                                f"(Pinecone: {original_score}, Cohere: {cohere_score}, Confidence: {chunk['confidence']})"
+                            )
+                        else:
+                            chunk["confidence"] = chunk["original_score"]
+                    
+                    # Sort by reranked score descending
+                    chunks.sort(key=lambda x: x["relevance_score"], reverse=True)
+                    reranked = True
+                    logger.info(f"✅ Reranking complete - sorted by relevance")
+                else:
+                    logger.warning("⚠️ Cohere returned empty response")
+            
+            except Exception as rerank_err:
+                logger.warning(f"⚠️ Cohere reranking failed, using original scores: {rerank_err}")
+                # Fall back to original scores
+                for chunk in chunks:
+                    chunk["confidence"] = chunk["original_score"]
+        else:
+            logger.info("ℹ️ Cohere not available - using Pinecone scores only")
+            # No Cohere - use original scores
+            for chunk in chunks:
+                chunk["confidence"] = chunk["original_score"]
+        
+        logger.info(f"✅ Final results: {len(chunks)} chunks (reranked: {reranked})")
         
         return ToolResult(
             success=True,
@@ -151,14 +292,15 @@ async def semantic_search_handler(
                 "query": query,
                 "repo_id": repo_id,
                 "chunks": chunks,
-                "count": len(chunks)
+                "count": len(chunks),
+                "reranked": reranked,
+                "reranker_model": "rerank-english-v3.0" if reranked else None
             }
         )
         
     except Exception as e:
         logger.error(f"❌ Search failed: {e}")
         return ToolResult(success=False, error=str(e))
-
 
 async def get_embeddings_stats_handler(
     repo_id: str,

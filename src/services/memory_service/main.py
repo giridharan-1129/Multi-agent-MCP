@@ -91,7 +91,11 @@ async def execute_tool(tool_name: str, tool_input: Dict[str, Any]):
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     result = await memory_service.execute_tool(tool_name, tool_input)
-    return result.dict()
+    return {
+        "success": result.success,
+        "data": result.data,
+        "error": result.error
+    }
 
 
 # ============================================================================

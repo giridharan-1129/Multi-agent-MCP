@@ -75,19 +75,18 @@ class RepositoryDownloader:
 
         try:
             # Check if repo already exists
+            # FIXED:
             if os.path.exists(clone_path):
                 logger.info("Repository already exists, updating", path=clone_path)
                 try:
                     await self._update_repo(clone_path)
                 except Exception as update_err:
-                    # Update failed - try fresh clone
-                    logger.info("Update failed, attempting fresh clone", path=clone_path)
+                    logger.info("Update failed, removing and re-cloning", path=clone_path)
                     try:
                         shutil.rmtree(clone_path)
-                        logger.info("Removed old repo, cloning fresh", path=clone_path)
                     except Exception as cleanup_err:
-                        logger.error("Failed to cleanup old repo", path=clone_path, error=str(cleanup_err))
-                        raise RepositoryCloneError(repo_url=repo_url, error_detail=f"Failed to cleanup old repo: {str(cleanup_err)}")
+                        logger.error("Failed to remove old repo", path=clone_path, error=str(cleanup_err))
+                        # Continue anyway - try to clone
                     
                     # Now clone fresh
                     await self._clone_repo(repo_url, clone_path, depth)

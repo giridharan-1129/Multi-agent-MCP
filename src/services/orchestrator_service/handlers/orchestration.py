@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 from uuid import UUID
+from .parallel_search import parallel_entity_and_semantic_search
 
 from ....shared.mcp_server import ToolResult
 
@@ -41,11 +42,55 @@ async def execute_query(
         logger.info(f"   Session: {session_id or 'NEW'}")
         logger.info("=" * 80)
         
+        ## ====================================================================
+        # STEP 0: GET PREVIOUS CHAT CONTEXT FROM MEMORY
         # ====================================================================
-        # STEP 1: ANALYZE QUERY
+        logger.info("\n💭 STEP 0: Fetching previous conversation context...")
+        
+        previous_context = ""
+        try:
+            # Call memory service to get chat history
+            memory_result = await call_agent_tool(
+                agent="memory",
+                tool="get_context",
+                input_params={
+                    "session_id": session_id or "new",
+                    "last_n_turns": 3  # Get last 3 turns for context
+                },
+                http_client=http_client,
+                agent_urls=agent_urls
+            )
+            
+            if memory_result.success and memory_result.data:
+                context_turns = memory_result.data.get("context_turns", [])
+                logger.info(f"   ✅ Retrieved {len(context_turns)} previous turns")
+                
+                # Build context string from previous turns
+                if context_turns:
+                    previous_context = "\n\n".join([
+                        f"[{turn.get('role', 'unknown').upper()}]: {turn.get('content', '')}"
+                        for turn in context_turns
+                    ])
+                    logger.debug(f"   📝 Context preview: {previous_context[:100]}...")
+            else:
+                logger.info(f"   ℹ️  No previous context found (new session)")
+                
+        except Exception as ctx_err:
+            logger.warning(f"   ⚠️  Failed to fetch context (continuing): {ctx_err}")
+            previous_context = ""
+        
+        # ====================================================================
+        # STEP 1: ANALYZE QUERY (WITH CONTEXT)
         # ====================================================================
         logger.info("\n📊 STEP 1: Analyzing query intent...")
-        analysis = await analyze_query(query, openai_api_key)
+        
+        # If we have context, include it in the analysis
+        enriched_query = query
+        if previous_context:
+            enriched_query = f"Previous conversation:\n{previous_context}\n\nNew query:\n{query}"
+            logger.info(f"   📚 Query enriched with {len(previous_context)} chars of context")
+        
+        analysis = await analyze_query(enriched_query, openai_api_key)
         
         if not analysis.success:
             logger.error(f"❌ Query analysis failed: {analysis.error}")
@@ -58,17 +103,28 @@ async def execute_query(
         entities = analysis.data.get("entities", [])
         confidence = analysis.data.get("confidence", 0)
         
-        logger.info(f"   ✅ Intent: {intent} (confidence: {confidence:.2f})")
-        logger.info(f"   ✅ Entities: {entities}")
+        # Clean entity names (remove class/function/method suffixes)
+        cleaned_entities = []
+        for entity in entities:
+            cleaned = entity.strip()
+            for suffix in [" class", " function", " method", " module", " file", " package"]:
+                if cleaned.lower().endswith(suffix):
+                    cleaned = cleaned[:-len(suffix)].strip()
+            cleaned_entities.append(cleaned)
+        
+        entities = cleaned_entities
+        
+        logger.info(f"Intent: {intent} (confidence: {confidence:.2f})")
+        logger.info(f"Entities: {entities}")
         
         # ====================================================================
         # STEP 2: ROUTE TO AGENTS
         # ====================================================================
-        logger.info("\n🛣️  STEP 2: Routing to appropriate agents...")
+        logger.info("STEP 2: Routing to appropriate agents...")
         routing = await route_to_agents(query, intent)
         
         if not routing.success:
-            logger.error(f"❌ Routing failed: {routing.error}")
+            logger.error(f"Routing failed: {routing.error}")
             return ToolResult(
                 success=False,
                 error=f"Routing failed: {routing.error}"
@@ -77,55 +133,119 @@ async def execute_query(
         agent_names = routing.data.get("recommended_agents", ["graph_query"])
         parallel = routing.data.get("parallel", False)
         
-        logger.info(f"   ✅ Agents to call: {agent_names}")
-        logger.info(f"   ✅ Mode: {'Parallel' if parallel else 'Sequential'}")
+        logger.info(f"Agents to call: {agent_names}")
+        logger.info(f"Mode: {'Parallel' if parallel else 'Sequential'}")
         
         # ====================================================================
-        # STEP 3: CALL AGENTS
+        # STEP 3: CALL AGENTS IN PARALLEL
         # ====================================================================
-        logger.info(f"\n🤖 STEP 3: Calling {len(agent_names)} agent(s)...")
+        import asyncio
+        logger.info(f"STEP 3: Calling {len(agent_names)} agent(s) in PARALLEL...")
         agent_results = []
+        entity_name = entities[0] if entities else "unknown"
         
-        for agent_idx, agent_name in enumerate(agent_names, 1):
-            logger.info(f"\n   [{agent_idx}/{len(agent_names)}] Agent: {agent_name}")
+        # Check if we have graph_query + other agents for parallel execution
+        # ALWAYS do parallel search for search/explain intents (Neo4j + Pinecone in parallel)
+        if intent in ["search", "explain", "analyze"] and "graph_query" in agent_names:
+            logger.info("   🔄 Parallel search scenario: Neo4j + Pinecone")
             
-            # Determine which tool to call for this agent
-            tool_name, tool_input = _select_tool_for_agent(
-                agent_name, intent, entities, analysis.data
-            )
-            
-            logger.info(f"      Tool: {tool_name}")
-            logger.info(f"      Input: {tool_input}")
-            
-            # Call the agent
-            agent_call = await call_agent_tool(
-                agent=agent_name,
-                tool=tool_name,
-                input_params=tool_input,
+            # Execute parallel entity + semantic search first
+            logger.info("   📍 Starting parallel Neo4j + Pinecone search...")
+            parallel_result = await parallel_entity_and_semantic_search(
+                query=query,
+                entity_name=entity_name,
+                openai_api_key=openai_api_key,
                 http_client=http_client,
+                postgres_client=postgres_client,
                 agent_urls=agent_urls
             )
             
-            if agent_call.success:
-                logger.info(f"      ✅ Success")
-            else:
-                logger.error(f"      ❌ Error: {agent_call.error}")
-            
+            # Add parallel search results
             agent_results.append({
-                "agent": agent_name,
-                "tool": tool_name,
-                "success": agent_call.success,
-                "data": agent_call.data if agent_call.success else None,
-                "error": agent_call.error
+                "agent": "graph_query",
+                "tool": "parallel_search",
+                "success": parallel_result.success,
+                "data": parallel_result.data,
+                "error": parallel_result.error,
+                "scenario": parallel_result.data.get("scenario") if parallel_result.success else None
             })
+            
+            # If other agents exist (like code_analyst), call them
+            other_agents = [a for a in agent_names if a != "graph_query"]
+            for agent_name in other_agents:
+                logger.info(f"\n   [{len(agent_results)+1}/{len(agent_names)}] Agent: {agent_name}")
+                
+                tool_name, tool_input = _select_tool_for_agent(
+                    agent_name, intent, entities, analysis.data, query
+                )
+                
+                logger.info(f"      Tool: {tool_name}")
+                logger.info(f"      Input: {tool_input}")
+                
+                agent_call = await call_agent_tool(
+                    agent=agent_name,
+                    tool=tool_name,
+                    input_params=tool_input,
+                    http_client=http_client,
+                    agent_urls=agent_urls
+                )
+                
+                if agent_call.success:
+                    logger.info(f"      ✅ Success")
+                else:
+                    logger.error(f"      ❌ Error: {agent_call.error}")
+                
+                agent_results.append({
+                    "agent": agent_name,
+                    "tool": tool_name,
+                    "success": agent_call.success,
+                    "data": agent_call.data if agent_call.success else None,
+                    "error": agent_call.error
+                })
         
-        # ====================================================================
-        # STEP 4: SYNTHESIZE RESPONSE
-        # ====================================================================
+        else:
+            # Sequential execution for single agent or non-graph_query scenarios
+            logger.info("   ⏳ Sequential execution mode")
+            
+            for agent_idx, agent_name in enumerate(agent_names, 1):
+                logger.info(f"\n   [{agent_idx}/{len(agent_names)}] Agent: {agent_name}")
+                
+                tool_name, tool_input = _select_tool_for_agent(
+                    agent_name, intent, entities, analysis.data, query
+                )
+                
+                logger.info(f"      Tool: {tool_name}")
+                logger.info(f"      Input: {tool_input}")
+                
+                agent_call = await call_agent_tool(
+                    agent=agent_name,
+                    tool=tool_name,
+                    input_params=tool_input,
+                    http_client=http_client,
+                    agent_urls=agent_urls
+                )
+                
+                if agent_call.success:
+                    logger.info(f"      ✅ Success")
+                else:
+                    logger.error(f"      ❌ Error: {agent_call.error}")
+                
+                agent_results.append({
+                    "agent": agent_name,
+                    "tool": tool_name,
+                    "success": agent_call.success,
+                    "data": agent_call.data if agent_call.success else None,
+                    "error": agent_call.error
+                })
+        
         logger.info(f"\n📝 STEP 4: Synthesizing {len(agent_results)} agent results...")
-        
-        synthesis = await synthesize_response(agent_results, query)
-        
+                
+        synthesis = await synthesize_response(
+            agent_results=agent_results,
+            original_query=query,
+            openai_api_key=openai_api_key,
+            previous_context=previous_context
+        )      
         if not synthesis.success:
             logger.error(f"❌ Synthesis failed: {synthesis.error}")
             return ToolResult(
@@ -164,6 +284,14 @@ async def execute_query(
         logger.info(f"   Session: {session_uuid}")
         logger.info("=" * 80 + "\n")
         
+        # Extract retrieved sources from synthesis data
+        retrieved_sources = synthesis.data.get("retrieved_sources", [])
+        sources_count = synthesis.data.get("sources_count", 0)
+        reranked_results = synthesis.data.get("reranked_results", False)
+        
+        logger.info(f"   📍 Retrieved sources: {sources_count}")
+        logger.info(f"   📍 Reranked results: {reranked_results}")
+        
         return ToolResult(
             success=True,
             data={
@@ -172,7 +300,11 @@ async def execute_query(
                 "intent": intent,
                 "entities_found": entities,
                 "session_id": str(session_uuid) if session_uuid else session_id,
-                "num_agents": len(agent_results)
+                "num_agents": len(agent_results),
+                "retrieved_sources": retrieved_sources,  # ← ADD
+                "sources_count": sources_count,  # ← ADD
+                "reranked_results": reranked_results,  # ← ADD
+                "previous_context_used": bool(previous_context)  # ← ADD
             }
         )
         
@@ -190,7 +322,8 @@ def _select_tool_for_agent(
     agent_name: str,
     intent: str,
     entities: List[str],
-    analysis_data: Dict[str, Any]
+    analysis_data: Dict[str, Any],
+    query: str = ""  # ← ADD query parameter
 ) -> tuple:
     """
     Select appropriate tool for agent based on intent and entities.
@@ -198,6 +331,9 @@ def _select_tool_for_agent(
     Returns:
         Tuple of (tool_name, tool_input)
     """
+    # Get first entity (already cleaned by caller)
+    entity_name = entities[0] if entities else "main"
+    
     if agent_name == "indexer":
         if intent == "index":
             return (
@@ -224,15 +360,27 @@ def _select_tool_for_agent(
     elif agent_name == "graph_query":
         return (
             "find_entity",
-            {"name": entities[0] if entities else "main"}
+            {"name": entity_name}
         )
     
     elif agent_name == "code_analyst":
-        return (
-            "analyze_function",
-            {"name": entities[0] if entities else "main"}
-        )
-    
+        # Select tool based on intent
+        if intent == "compare":
+            # For compare intent, we need 2 entities - use first if available
+            entity2 = entities[1] if len(entities) > 1 else entity_name
+            return ("compare_implementations", {"entity1": entity_name, "entity2": entity2})
+        elif intent == "pattern":
+            return ("find_patterns", {"pattern_type": entity_name})
+        elif intent == "explain":
+            # Explain what a specific entity does
+            return ("explain_implementation", {"entity_name": entity_name})
+        elif intent == "analyze":
+            # Analyze if it's a class or function - default to analyze_class
+            return ("analyze_class", {"name": entity_name})
+        else:
+            # Default to function analysis
+            return ("analyze_function", {"name": entity_name})
+
     else:
         return ("get_index_status", {})
 

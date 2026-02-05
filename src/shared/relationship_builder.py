@@ -63,19 +63,14 @@ class RelationshipBuilder:
             self._build_inheritance_relationships(entities, entity_lookup)
         )
 
-        # Build import relationships
         relationships.extend(self._build_import_relationships(entities, imports))
 
-        # Build decorator relationships
-        relationships.extend(self._build_decorator_relationships(entities))
 
         # Build call relationships
         relationships.extend(self._build_call_relationships_from_entities(entities))
         relationships.extend(self._build_docstring_relationships(entities))
         relationships.extend(self._build_method_relationships(entities))
         relationships.extend(self._build_parameter_relationships(entities))
-        relationships.extend(self._build_return_relationships(entities))
-
         logger.info(
             "Relationships built",
             total=len(relationships),
@@ -184,140 +179,95 @@ class RelationshipBuilder:
         return relationships
 
 
-    def _build_return_relationships(self, entities):
-        relationships = []
-
-        for e in entities:
-            if e["type"] == "Type":
-                relationships.append({
-                    "source": e["function"],
-                    "target": e["name"],
-                    "type": "RETURNS",
-                })
-
-        return relationships
-
-    def _build_decorator_relationships(
-        self,
-        entities: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """
-        Build decorator relationships.
-
-        Args:
-            entities: List of entities
-
-        Returns:
-            List of decorator relationships
-        """
-        relationships = []
-
-        for entity in entities:
-            if entity.get("decorators"):
-                for decorator in entity["decorators"]:
-                    # Extract decorator name (handles @decorator.subdecorator)
-                    decorator_name = decorator.split("(")[0]  # Remove parameters
-                    decorator_name = decorator_name.split(".")[-1]  # Get last part
-
-                    relationship = {
-                        "source": entity["name"],
-                        "source_module": entity.get("module"),
-                        "target": decorator_name,
-                        "target_module": entity.get("module"),  # decorators usually local
-                        "type": "DECORATED_BY",
-                        "decorator_full": decorator,
-                        "line_number": entity.get("line_number"),
-                    }
-
-                    relationships.append(relationship)
-
-                    logger.debug(
-                        "Decorator relationship found",
-                        source=entity["name"],
-                        decorator=decorator,
-                    )
-
-        return relationships
-
-    def _resolve_call_target(self, call_name, entity_index):
-        """
-        Resolve a call name to Function or Method entity.
-        Priority:
-        1. Method
-        2. Function
-        """
-        if (call_name, "Method") in entity_index:
-            return call_name, "Method"
-
-        if (call_name, "Function") in entity_index:
-            return call_name, "Function"
-
-        return None, None
-
     def _build_call_relationships_from_entities(self, entities):
         relationships = []
 
-        # Index functions
-        function_index = {
-            e["name"]: e
-            for e in entities
-            if e["type"] == "Function"
-        }
-
-        # Index methods by (class, method)
-        method_index = {}
+        # ✅ CREATE COMPREHENSIVE INDEXES
+        # Index ALL functions and methods by name (not just in module)
+        function_index = {}  # name -> entity
+        method_index = {}    # name -> entity (any class)
+        class_index = {}     # name -> entity
+        
         for e in entities:
-            if e["type"] == "Method" and e.get("parent_class"):
-                method_index[(e["parent_class"], e["name"])] = e
+            if e["type"] == "Function":
+                function_index[e["name"]] = e
+            elif e["type"] == "Method":
+                method_index[e["name"]] = e
+            elif e["type"] == "Class":
+                class_index[e["name"]] = e
 
+        # ✅ PROCESS ALL CALLERS
         for caller in entities:
             if caller["type"] not in {"Function", "Method"}:
                 continue
 
             instance_map = caller.get("instance_map", {})
+            calls = caller.get("calls", [])
+            
+            if not calls:
+                continue
 
-            for call in caller.get("calls", []):
+            for call in calls:
+                # ✅ DIRECT FUNCTION CALL: foo()
+                if call["type"] == "function":
+                    call_name = call.get("name")
+                    
+                    # First: Look in function index
+                    if call_name in function_index:
+                        target = function_index[call_name]
+                        relationships.append({
+                            "source": caller["name"],
+                            "source_module": caller.get("module"),
+                            "target": target["name"],
+                            "target_module": target.get("module"),
+                            "type": "CALLS",
+                            "line_number": caller.get("line_number"),
+                        })
+                    # Second: Look in method index (class methods called directly)
+                    elif call_name in method_index:
+                        target = method_index[call_name]
+                        relationships.append({
+                            "source": caller["name"],
+                            "source_module": caller.get("module"),
+                            "target": target["name"],
+                            "target_module": target.get("module"),
+                            "type": "CALLS",
+                            "line_number": caller.get("line_number"),
+                        })
 
-                # -------------------------
-                # METHOD CALL (obj.method)
-                # -------------------------
-                if call["type"] == "method":
-                    obj = call["object"]
-                    method_name = call["name"]
-
-                    class_name = instance_map.get(obj)
+                # ✅ METHOD CALL: obj.method() or self.method()
+                elif call["type"] == "method":
+                    obj_name = call.get("object")
+                    method_name = call.get("name")
+                    
+                    # Resolve object to class
+                    class_name = instance_map.get(obj_name)
+                    
                     if not class_name:
+                        # Fallback: Try direct method lookup
+                        if method_name in method_index:
+                            target = method_index[method_name]
+                            relationships.append({
+                                "source": caller["name"],
+                                "source_module": caller.get("module"),
+                                "target": target["name"],
+                                "target_module": target.get("module"),
+                                "type": "CALLS",
+                                "line_number": caller.get("line_number"),
+                            })
                         continue
-
-                    target = method_index.get((class_name, method_name))
-                    if not target:
-                        continue
-
-                    relationships.append({
-                        "source": caller["name"],
-                        "source_module": caller.get("module"),
-                        "target": target["name"],
-                        "target_module": target.get("module"),
-                        "type": "CALLS",
-                        "line_number": caller.get("line_number"),
-                    })
-
-                # -------------------------
-                # FUNCTION CALL (foo())
-                # -------------------------
-                elif call["type"] == "function":
-                    target = function_index.get(call["name"])
-                    if not target:
-                        continue
-
-                    relationships.append({
-                        "source": caller["name"],
-                        "source_module": caller.get("module"),
-                        "target": target["name"],
-                        "target_module": target.get("module"),
-                        "type": "CALLS",
-                        "line_number": caller.get("line_number"),
-                    })
+                    
+                    # Look up method in that class
+                    if method_name in method_index:
+                        target = method_index[method_name]
+                        relationships.append({
+                            "source": caller["name"],
+                            "source_module": caller.get("module"),
+                            "target": target["name"],
+                            "target_module": target.get("module"),
+                            "type": "CALLS",
+                            "line_number": caller.get("line_number"),
+                        })
 
         return relationships
 

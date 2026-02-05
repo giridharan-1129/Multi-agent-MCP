@@ -312,7 +312,18 @@ class Neo4jService:
         def _run():
             with self.driver.session(database=self.database) as session:
                 result = session.run(query, params or {})
-                return [record.data() for record in result]
+                records = []
+                for record in result:
+                    try:
+                        # For RETURN clause with multiple columns, convert to dict
+                        if record.keys():
+                            records.append(dict(zip(record.keys(), record.values())))
+                        else:
+                            records.append(record.data())
+                    except Exception as e:
+                        logger.debug(f"Failed to convert record: {e}, raw: {record}")
+                        continue
+                return records
 
         try:
             return await run_in_threadpool(_run)
@@ -591,12 +602,14 @@ class Neo4jService:
                 )
 
         await run_in_threadpool(_run)
+
     async def get_graph_statistics(self) -> Dict[str, Any]:
-            """Get graph statistics."""
-            try:
-                if not self.driver:
-                    return {"nodes": {}, "relationships": {}}
-                
+        """Get graph statistics."""
+        try:
+            if not self.driver:
+                return {"nodes": {}, "relationships": {}}
+            
+            def _run():
                 with self.driver.session(database=self.database) as session:
                     # Count nodes by label
                     node_query = "MATCH (n) RETURN labels(n)[0] as label, count(*) as count"
@@ -612,10 +625,12 @@ class Neo4jService:
                         "nodes": nodes,
                         "relationships": relationships,
                     }
-                    
-            except Exception as e:
-                logger.error(f"Failed to get statistics: {str(e)}")
-                return {"nodes": {}, "relationships": {}}
+            
+            return await run_in_threadpool(_run)
+                        
+        except Exception as e:
+            logger.error(f"Failed to get statistics: {str(e)}")
+            return {"nodes": {}, "relationships": {}}
 
 
     # Global instance

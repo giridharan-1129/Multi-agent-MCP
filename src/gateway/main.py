@@ -162,16 +162,21 @@ async def chat(request: ChatRequest) -> ChatResponse:
             raise HTTPException(status_code=response.status_code, detail=response.text)
         
         result = response.json()
-        logger.info(f"← POST /api/chat: success - {len(result.get('response', ''))} chars")
+        
+        # Extract data from orchestrator response (wrapped in "data" field)
+        data = result.get("data", result)  # Fallback to result if no data field
+        response_text = data.get("response", "No response generated")
+        
+        logger.info(f"← POST /api/chat: success - {len(response_text)} chars")
         
         # Map orchestrator response to ChatResponse model
         return ChatResponse(
             success=result.get("success", False),
-            response=result.get("response", "No response generated"),
-            agents_used=result.get("agents_used", []),
-            intent=result.get("intent"),
-            entities_found=result.get("entities_found", []),
-            session_id=result.get("session_id"),
+            response=response_text,
+            agents_used=data.get("agents_used", []),
+            intent=data.get("intent"),
+            entities_found=data.get("entities_found", []),
+            session_id=data.get("session_id"),
             error=result.get("error")
         )
         
@@ -184,7 +189,96 @@ async def chat(request: ChatRequest) -> ChatResponse:
         logger.error(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/stats/neo4j")
+async def get_neo4j_stats():
+    """Get Neo4j database statistics."""
+    try:
+        logger.info("↗ GET /api/stats/neo4j")
+        
+        response = await http_client.post(
+            f"{orchestrator_url}/execute?tool_name=get_index_status",
+            json={},
+            timeout=10.0
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to get Neo4j stats: {response.text}")
+            return {"success": False, "error": "Failed to fetch statistics"}
+        
+        result = response.json()
+        stats = result.get("data", {}).get("statistics", {})
+        nodes = stats.get("nodes", {})
+        
+        logger.info("↖ GET /api/stats/neo4j: success")
+        
+        return {
+            "success": True,
+            "data": {
+                "classes": nodes.get("Class", 0),
+                "functions": nodes.get("Function", 0),
+                "files": nodes.get("File", 0),
+                "packages": nodes.get("Package", 0),
+                "total_nodes": stats.get("total_nodes", 0),
+                "total_relationships": stats.get("total_relationships", 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Neo4j stats error: {e}")
+        return {"success": False, "error": str(e)}
 
+
+@app.get("/api/stats/pinecone")
+async def get_pinecone_stats():
+    """Get Pinecone embedding statistics."""
+    try:
+        logger.info("↗ GET /api/stats/pinecone")
+        
+        indexer_url = os.getenv("INDEXER_SERVICE_URL", "http://localhost:8002")
+        
+        response = await http_client.get(
+            f"{indexer_url}/embeddings/stats",
+            timeout=10.0
+        )
+        
+        if response.status_code != 200:
+            logger.error(f"Pinecone not available: {response.text}")
+            return {
+                "success": False,
+                "status": "unavailable",
+                "message": "Pinecone not configured or unavailable"
+            }
+        
+        result = response.json()
+        
+        if result.get("status") == "unavailable":
+            return {
+                "success": False,
+                "status": "unavailable",
+                "message": result.get("message", "Pinecone not configured")
+            }
+        
+        summary = result.get("summary", {})
+        stats = result.get("stats", {})
+        
+        logger.info("↖ GET /api/stats/pinecone: success")
+        
+        return {
+            "success": True,
+            "data": {
+                "vectors_stored": summary.get("chunks_total", 0),
+                "dimension": stats.get("dimension", 1536),
+                "metric": stats.get("metric", "cosine"),
+                "index_name": stats.get("index_name", "code-search"),
+                "total_vectors": stats.get("total_vectors", 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Pinecone stats error: {e}")
+        return {
+            "success": False,
+            "status": "error",
+            "message": str(e)
+        }
 
 @app.get("/api")
 async def api_info():
@@ -193,7 +287,9 @@ async def api_info():
         "version": "2.0.0",
         "architecture": "Gateway → Orchestrator flow",
         "endpoints": {
-            "POST /api/chat": "Send query",
+            "POST /api/chat": "Send query to orchestrator",
+            "GET /api/stats/neo4j": "Get Neo4j database statistics (Classes, Functions, Files)",
+            "GET /api/stats/pinecone": "Get Pinecone embedding statistics (Vectors, Dimension)",
             "GET /health": "Health check",
             "GET /api": "This info"
         }

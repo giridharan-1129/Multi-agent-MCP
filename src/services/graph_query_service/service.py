@@ -2,6 +2,7 @@
 
 import os
 from typing import Any, Dict
+from ...shared.pinecone_embeddings_service import PineconeEmbeddingsService
 
 from ...shared.mcp_server import BaseMCPServer, ToolResult
 from ...shared.neo4j_service import Neo4jService
@@ -13,6 +14,7 @@ from .handlers import (
     trace_imports_handler,
     find_related_handler,
     execute_query_handler,
+    semantic_search_handler
 )
 
 logger = get_logger(__name__)
@@ -28,7 +30,8 @@ class GraphQueryService(BaseMCPServer):
             port=int(os.getenv("GRAPH_QUERY_PORT", 8003))
         )
         self.neo4j_service: Neo4jService = None
-    
+        self.pinecone_service: PineconeEmbeddingsService = None  # ADD THIS
+
     async def register_tools(self):
         """Register graph query tools."""
         
@@ -152,22 +155,73 @@ class GraphQueryService(BaseMCPServer):
             handler=self._execute_query_wrapper
         )
         
-        self.logger.info("Registered 6 graph query tools")
+        # Tool 7: Semantic Search (Pinecone fallback)
+        self.register_tool(
+            name="semantic_search",
+            description="Search code semantically using Pinecone embeddings (fallback when Neo4j returns empty)",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query"
+                    },
+                    "repo_id": {
+                        "type": "string",
+                        "description": "Repository ID (default: fastapi)"
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of results (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            },
+            handler=self._semantic_search_wrapper
+        )
+        
+        self.logger.info("Registered 7 graph query tools")
     
     async def _setup_service(self):
-        """Initialize Neo4j service."""
+        """Initialize Neo4j and Pinecone services."""
         try:
+            # Initialize Neo4j
+            logger.info("📊 Initializing Neo4j service...")
             neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
             neo4j_user = os.getenv("NEO4J_USER", "neo4j")
             neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
             
             self.neo4j_service = Neo4jService(neo4j_uri, neo4j_user, neo4j_password)
             await self.neo4j_service.verify_connection()
+            logger.info("   ✅ Neo4j service initialized")
             
-            self.logger.info("Graph Query Service initialized successfully")
+            # Initialize Pinecone
+            logger.info("🔍 Initializing Pinecone service...")
+            try:
+                self.pinecone_service = PineconeEmbeddingsService()
+                
+                # Verify Pinecone is initialized
+                if self.pinecone_service and self.pinecone_service.index:
+                    logger.info("   ✅ Pinecone service initialized")
+                    logger.info(f"   ✅ Cohere client available: {self.pinecone_service.cohere_client is not None}")
+                else:
+                    logger.warning("   ⚠️  Pinecone index not available")
+                    self.pinecone_service = None
+                    
+            except Exception as pinecone_err:
+                logger.error(f"   ❌ Pinecone initialization failed: {pinecone_err}")
+                import traceback
+                logger.error(traceback.format_exc())
+                self.pinecone_service = None
+            
+            self.logger.info("✅ Graph Query Service initialized successfully")
+            
         except Exception as e:
-            self.logger.error(f"Failed to initialize graph query service: {e}")
+            self.logger.error(f"❌ Failed to initialize graph query service: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             raise
+
     
     # ============================================================================
     # WRAPPER METHODS (delegate to handlers)
@@ -205,6 +259,34 @@ class GraphQueryService(BaseMCPServer):
     ) -> ToolResult:
         """Wrapper for execute_query handler."""
         return await execute_query_handler(self.neo4j_service, query, parameters)
+    
+    async def _semantic_search_wrapper(
+        self,
+        query: str,
+        repo_id: str = "fastapi",
+        top_k: int = 5
+    ) -> ToolResult:
+        """Wrapper for semantic search - delegates to Pinecone handler."""
+        if not self.pinecone_service:
+            logger.warning("⚠️ Pinecone not initialized - semantic search unavailable")
+            return ToolResult(
+                success=True,
+                data={
+                    "query": query,
+                    "repo_id": repo_id,
+                    "chunks": [],
+                    "count": 0,
+                    "reranked": False,
+                    "message": "Pinecone not initialized"
+                }
+            )
+        logger.info(f"🔍 Semantic search wrapper called for: {query}")
+        return await semantic_search_handler(
+            query=query,
+            repo_id=repo_id,
+            top_k=top_k,
+            pinecone_service=self.pinecone_service
+        )
     
     async def _cleanup_service(self):
         """Cleanup Neo4j connection."""

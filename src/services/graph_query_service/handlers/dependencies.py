@@ -23,7 +23,7 @@ async def get_dependencies_handler(
         result = await neo4j_service.execute_query(query, {"name": name})
         
         dependencies = [
-            {"name": record[0], "type": record[1]}
+            {"name": record["dependency"], "type": record["relationship_type"]}
             for record in result
         ]
         
@@ -57,7 +57,7 @@ async def get_dependents_handler(
         result = await neo4j_service.execute_query(query, {"name": name})
         
         dependents = [
-            {"name": record[0], "type": record[1]}
+            {"name": record["dependent"], "type": record["relationship_type"]}
             for record in result
         ]
         
