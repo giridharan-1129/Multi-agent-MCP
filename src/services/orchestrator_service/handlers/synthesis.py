@@ -120,6 +120,9 @@ async def synthesize_response(
                         if not code_content:
                             code_content = chunk.get("preview", "")
                         
+                                                # Get full code content - try multiple field names
+                        full_code = chunk.get("content") or chunk.get("preview", "")
+                        
                         source = {
                             "source_type": "pinecone",
                             "type": "code_chunk",
@@ -129,11 +132,12 @@ async def synthesize_response(
                             "end_line": chunk.get("end_line", 0),
                             "lines": chunk.get("lines", "0-0"),
                             "language": chunk.get("language", "python"),
-                            "content": code_content,  # ← NOW USES FULL CODE
-                            "preview": chunk.get("preview", "")[:200],  # ← Keep preview separate (200 chars)
+                            "content": full_code,
+                            "preview": chunk.get("preview", "")[:200],
                             "relevance_score": round(chunk.get("relevance_score", 0), 3),
                             "confidence": round(chunk.get("confidence", 0), 3),
-                            "reranked": chunk.get("reranked", False)
+                            "reranked": chunk.get("reranked", False),
+                            "chunk_id": chunk.get("chunk_id", "")
                         }
                         retrieved_sources.append(source)
                         logger.debug(f"      Chunk {idx}: {source['file_name']} (relevance: {source['relevance_score']}, reranked: {source['reranked']})")
@@ -177,10 +181,6 @@ async def synthesize_response(
         
         full_context = "\n\n".join(context_parts)
         
-        # ====================================================================
-        # STEP 3: GENERATE RESPONSE USING LLM (ALWAYS)
-        # ====================================================================
-        # IMPORTANT: Always generate a response, even with limited context
         if full_context.strip():
             logger.info(f"🧠 Synthesizing response with LLM... {scenario_info}")
             response_text = await _generate_llm_response(
@@ -200,35 +200,35 @@ async def synthesize_response(
                 f"- Code implementation details"
             )
         
-            logger.info(f"✅ Response synthesized - Length: {len(response_text)} chars")
+        logger.info(f"✅ Response synthesized - Length: {len(response_text)} chars")
         
-            logger.info(f"✅ SYNTHESIS COMPLETE")
-            logger.info(f"   Agents: {list(agents_used)}")
-            logger.info(f"   Sources: {len(retrieved_sources)} total")
-            logger.info(f"   Scenario: {parallel_scenario or 'standard'}")
-            
-            # ✅ DEBUG: Log all retrieved sources
-            if retrieved_sources:
-                logger.info(f"   📚 Retrieved sources breakdown:")
-                pinecone_count = len([s for s in retrieved_sources if s.get("source_type") == "pinecone"])
-                neo4j_count = len([s for s in retrieved_sources if s.get("source_type") == "neo4j"])
-                logger.info(f"      - Pinecone: {pinecone_count} chunks")
-                logger.info(f"      - Neo4j: {neo4j_count} entities")
-            else:
-                logger.warning(f"   ⚠️  No sources extracted despite successful searches")
-            
-            return ToolResult(
-                success=True,
-                data={
-                    "response": response_text,
-                    "agents_used": list(agents_used),
-                    "retrieved_sources": retrieved_sources,  # ✅ ALWAYS return sources
-                    "sources_count": len(retrieved_sources),
-                    "scenario": parallel_scenario,
-                    "reranked_results": any(s.get("reranked") for s in retrieved_sources if s.get("source_type") == "pinecone")
-                }
-            )
+        logger.info(f"✅ SYNTHESIS COMPLETE")
+        logger.info(f"   Agents: {list(agents_used)}")
+        logger.info(f"   Sources: {len(retrieved_sources)} total")
+        logger.info(f"   Scenario: {parallel_scenario or 'standard'}")
         
+        # ✅ DEBUG: Log all retrieved sources
+        if retrieved_sources:
+            logger.info(f"   📚 Retrieved sources breakdown:")
+            pinecone_count = len([s for s in retrieved_sources if s.get("source_type") == "pinecone"])
+            neo4j_count = len([s for s in retrieved_sources if s.get("source_type") == "neo4j"])
+            logger.info(f"      - Pinecone: {pinecone_count} chunks")
+            logger.info(f"      - Neo4j: {neo4j_count} entities")
+        else:
+            logger.warning(f"   ⚠️  No sources extracted despite successful searches")
+        
+        return ToolResult(
+            success=True,
+            data={
+                "response": response_text,
+                "agents_used": list(agents_used),
+                "retrieved_sources": retrieved_sources,  # ✅ ALWAYS return sources
+                "sources_count": len(retrieved_sources),
+                "scenario": parallel_scenario,
+                "reranked_results": any(s.get("reranked") for s in retrieved_sources if s.get("source_type") == "pinecone")
+            }
+        )
+
     except Exception as e:
         logger.error(f"❌ Synthesis failed: {e}")
         import traceback
@@ -237,18 +237,36 @@ async def synthesize_response(
 
 
 def _format_context(context: List[Any]) -> str:
-    """Format context data into readable text."""
+    """Format context data into readable text for LLM."""
     lines = []
     for item in context:
         if isinstance(item, dict):
-            for key, value in item.items():
-                if value and key not in ["error"]:
-                    if isinstance(value, list) and len(value) > 0:
-                        lines.append(f"- {key}: {', '.join(map(str, value[:5]))}")
-                    elif isinstance(value, dict):
-                        lines.append(f"- {key}: {len(value)} items")
-                    else:
-                        lines.append(f"- {key}: {str(value)[:200]}")
+            # Check if this is a Neo4j entity (has 'name', 'type', 'properties')
+            if "name" in item and "type" in item:
+                entity_name = item.get("name", "Unknown")
+                entity_type = item.get("type", "Unknown")
+                properties = item.get("properties", {})
+                module = properties.get("module", "N/A")
+                line_num = properties.get("line_number", "N/A")
+                
+                lines.append(f"**Entity: {entity_name} ({entity_type})**")
+                lines.append(f"- Module: {module}")
+                lines.append(f"- Line Number: {line_num}")
+                
+                # Add any other properties
+                for prop_key, prop_value in properties.items():
+                    if prop_key not in ["name", "module", "line_number"]:
+                        lines.append(f"- {prop_key}: {str(prop_value)[:150]}")
+            else:
+                # Fallback for other dict formats
+                for key, value in item.items():
+                    if value and key not in ["error"]:
+                        if isinstance(value, list) and len(value) > 0:
+                            lines.append(f"- {key}: {', '.join(map(str, value[:5]))}")
+                        elif isinstance(value, dict):
+                            lines.append(f"- {key}: {len(value)} items")
+                        else:
+                            lines.append(f"- {key}: {str(value)[:200]}")
     return "\n".join(lines) if lines else "No data available"
 
 

@@ -143,7 +143,7 @@ with st.sidebar:
             st.session_state.neo4j_stats_timestamp = None
     
     # Fetch stats if not cached
-    if st.session_state.neo4j_stats is None:
+    if st.session_state.neo4j_stats and "error" not in st.session_state.neo4j_stats:
         try:
             res = requests.get(
                 f"{GATEWAY_URL}/api/stats/neo4j",
@@ -383,44 +383,42 @@ with message_container:
                     with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=False):
                         for i, step in enumerate(thinking_steps, 1):
                             st.caption(f"**Step {i}:** {step[:300]}...")
-                    
-                    # SHOW RETRIEVED SOURCES FROM MESSAGE HISTORY
-                    retrieved_sources = msg.get("retrieved_sources", [])
-                    if retrieved_sources:
-                        pinecone_sources = [s for s in retrieved_sources if s.get('source_type') == 'pinecone']
-                        neo4j_sources = [s for s in retrieved_sources if s.get('source_type') == 'neo4j']
-                        
-                        if pinecone_sources:
-                            st.write("**📝 Code Chunks (Semantic Search)**")
-                            for j, source in enumerate(pinecone_sources, 1):
-                                with st.container(border=True):
-                                    col1, col2 = st.columns([0.8, 0.2])
-                                    
-                                    with col1:
-                                        st.markdown(f"""
-**{j}. {source.get('file_name', 'unknown')}**s
-- **Language:** {source.get('language', 'python')}
-- **Lines:** {source.get('start_line', '?')}-{source.get('end_line', '?')}
-- **Relevance:** {round(source.get('relevance_score', 0) * 100)}% {'(reranked)' if source.get('reranked') else ''}
-                                        """)
-                                    
-                                    with col2:
-                                        if st.button("📂 View", key=f"history_source_{j}"):
-                                            st.session_state[f"show_history_source_{j}"] = True
+                
+                # SHOW RETRIEVED SOURCES FROM MESSAGE HISTORY
+                if retrieved_sources:
+                    pinecone_sources = [s for s in retrieved_sources if s.get('source_type') == 'pinecone']
+                    neo4j_sources = [s for s in retrieved_sources if s.get('source_type') == 'neo4j']   
+                    if pinecone_sources:
+                        st.write("**📝 Code Chunks (Semantic Search)**")
+                        for j, source in enumerate(pinecone_sources, 1):
+                            with st.container(border=True):
+                                col1, col2 = st.columns([0.8, 0.2])
                                 
-                                if st.session_state.get(f"show_history_source_{j}"):
-                                    st.code(source.get('content', 'No content'), language=source.get('language', 'python'))
-                        
-                        if neo4j_sources:
-                            st.write("**🔗 Neo4j Entities**")
-                            for k, source in enumerate(neo4j_sources, 1):
-                                with st.container(border=True):
+                                with col1:
                                     st.markdown(f"""
-**{source.get('entity_type', 'Unknown')}:** `{source.get('entity_name', 'unknown')}`
-- **Module:** {source.get('module', 'N/A')}
-- **Line:** {source.get('line_number', 'N/A')}
-                                    """)
-                    
+                                                    **{j}. {source.get('file_name', 'unknown')}**s
+                                                    - **Language:** {source.get('language', 'python')}
+                                                    - **Lines:** {source.get('start_line', '?')}-{source.get('end_line', '?')}
+                                                    - **Relevance:** {round(source.get('relevance_score', 0) * 100)}% {'(reranked)' if source.get('reranked') else ''}
+                                                                                            """)
+                                    
+                                with col2:
+                                    if st.button("📂 View", key=f"history_source_{j}"):
+                                        st.session_state[f"show_history_source_{j}"] = True
+                                
+                            if st.session_state.get(f"show_history_source_{j}"):
+                                st.code(source.get('content', 'No content'), language=source.get('language', 'python'))
+                                    
+                    if neo4j_sources:  # ← CORRECT: Now at proper indentation level
+                        st.write("**🔗 Neo4j Entities**")
+                        for k, source in enumerate(neo4j_sources, 1):
+                            with st.container(border=True):
+                                st.markdown(f"""
+                                                    **{source.get('entity_type', 'Unknown')}:** `{source.get('entity_name', 'unknown')}`
+                                                    - **Module:** {source.get('module', 'N/A')}
+                                                    - **Line:** {source.get('line_number', 'N/A')}
+                                                                                        """)
+                                                            
                     if tools_used:
                         st.write("**🔧 Tools Used:**")
                         tool_str = " ".join([f'<span class="agent-badge">{t}</span>' for t in tools_used])
@@ -452,10 +450,10 @@ if query:
                     timeout=120
                 )
             
-            if res.ok:
-                data = res.json()
+        if res.ok:
+            data = res.json()
                 
-                if data.get("success"):
+            if data.get("success"):
                     # DEBUG: Print the full response
                     st.write("DEBUG - Full Response:")
                     st.json(data)
@@ -566,11 +564,11 @@ if query:
                                         language = chunk.get("language", "python")
                                         
                                         st.markdown(f"""
-            📄 **{file_name}**
-            - **Lines:** {start_line}-{end_line}
-            - **Language:** {language}
-                                        """)
-                                    
+                                                📄 **{file_name}**
+                                                - **Lines:** {start_line}-{end_line}
+                                                - **Language:** {language}
+                                                                            """)
+                                                                        
                                     with col_score:
                                         relevance = chunk.get("relevance_score", 0)
                                         confidence = chunk.get("confidence", 0)
@@ -591,10 +589,10 @@ if query:
                                         else:
                                             st.info("No code content available")
                         
+                        else:
+                            st.info("ℹ️ No sources retrieved for this query")
                         st.divider()
-                    else:
-                        st.info("ℹ️ No sources retrieved for this query")
-                    
+
                     # Store in session state
                     st.session_state.messages.append({
                         "role": "assistant",
@@ -611,12 +609,12 @@ if query:
                         }
                     })
                     st.rerun()
-                else:
-                    st.error(f"Error: {data.get('error', 'Unknown error')}")
-                    st.session_state.messages.append({"role": "assistant", "content": f"Error: {data.get('error', 'Unknown error')}"})
-                    st.rerun()
             else:
-                st.error(f"Error: {res.text}")
+                st.error(f"Error: {data.get('error', 'Unknown error')}")
+                st.session_state.messages.append({"role": "assistant", "content": f"Error: {data.get('error', 'Unknown error')}"})
+                st.rerun()
+        else:
+            st.error(f"Error: {res.text}")
 
     except requests.exceptions.Timeout:
         st.error("⏱️ Request timeout")

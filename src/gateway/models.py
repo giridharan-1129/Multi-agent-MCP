@@ -57,6 +57,15 @@ class ChatResponse(BaseModel):
     error: Optional[str] = None
     """Error message if unsuccessful"""
     
+    retrieved_sources: List[dict] = []
+    """Retrieved sources from Neo4j and Pinecone with citations"""
+    
+    sources_count: int = 0
+    """Total number of sources retrieved"""
+    
+    reranked_results: bool = False
+    """Whether results were reranked by Cohere"""
+    
     class Config:
         """Pydantic config."""
         json_schema_extra = {
@@ -66,10 +75,26 @@ class ChatResponse(BaseModel):
                 "agents_used": ["graph_query", "code_analyst"],
                 "intent": "explain",
                 "entities_found": ["FastAPI"],
-                "session_id": "550e8400-e29b-41d4-a716-446655440000"
+                "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                "retrieved_sources": [
+                    {
+                        "source_type": "neo4j",
+                        "entity_name": "FastAPI",
+                        "entity_type": "Class",
+                        "module": "fastapi.applications"
+                    },
+                    {
+                        "source_type": "pinecone",
+                        "file_name": "main.py",
+                        "start_line": 100,
+                        "end_line": 150,
+                        "relevance_score": 0.95
+                    }
+                ],
+                "sources_count": 2,
+                "reranked_results": True
             }
         }
-
 
 # ========================
 # Indexing Models

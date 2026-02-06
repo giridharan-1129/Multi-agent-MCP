@@ -245,7 +245,16 @@ async def execute_query(
             original_query=query,
             openai_api_key=openai_api_key,
             previous_context=previous_context
-        )      
+        )
+        
+        # Safety check: synthesis should never be None, but handle it gracefully
+        if synthesis is None:
+            logger.error(f"❌ Synthesis returned None")
+            return ToolResult(
+                success=False,
+                error="Response synthesis failed - returned None"
+            )
+        
         if not synthesis.success:
             logger.error(f"❌ Synthesis failed: {synthesis.error}")
             return ToolResult(

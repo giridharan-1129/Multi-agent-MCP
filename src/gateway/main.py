@@ -163,11 +163,33 @@ async def chat(request: ChatRequest) -> ChatResponse:
         
         result = response.json()
         
+        # Safety check: result should be a dict
+        if not isinstance(result, dict):
+            logger.error(f"Invalid response format from Orchestrator: {type(result)}")
+            raise HTTPException(status_code=500, detail="Invalid response format from Orchestrator")
+        
         # Extract data from orchestrator response (wrapped in "data" field)
-        data = result.get("data", result)  # Fallback to result if no data field
+        data = result.get("data")
+        
+        # If no "data" field, use result as fallback
+        if data is None:
+            data = result
+        
+        # Safety check: data should be a dict
+        if not isinstance(data, dict):
+            logger.error(f"Invalid data format: {type(data)}")
+            raise HTTPException(status_code=500, detail="Invalid data format from Orchestrator")
+        
         response_text = data.get("response", "No response generated")
         
         logger.info(f"← POST /api/chat: success - {len(response_text)} chars")
+        
+        # Extract retrieved sources from orchestrator response
+        retrieved_sources = data.get("retrieved_sources", [])
+        sources_count = data.get("sources_count", 0)
+        reranked_results = data.get("reranked_results", False)
+        
+        logger.info(f"   📚 Sources: {sources_count} | Reranked: {reranked_results}")
         
         # Map orchestrator response to ChatResponse model
         return ChatResponse(
@@ -177,9 +199,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
             intent=data.get("intent"),
             entities_found=data.get("entities_found", []),
             session_id=data.get("session_id"),
-            error=result.get("error")
+            error=result.get("error"),
+            retrieved_sources=retrieved_sources,
+            sources_count=sources_count,
+            reranked_results=reranked_results
         )
-        
     except httpx.TimeoutException:
         logger.error("Orchestrator timeout")
         raise HTTPException(status_code=504, detail="Orchestrator request timed out")
