@@ -315,7 +315,7 @@ async def synthesize_response(
         logger.debug(f"\n   FULL CONTEXT TO SEND TO LLM:\n{full_context}\n")
         
         if full_context.strip():
-            logger.info(f"\n🧠 Synthesizing response with LLM... {scenario_info}")
+            logger.info(f"\n Synthesizing response with LLM... {scenario_info}")
             logger.info(f"   📝 Query: {original_query[:100]}...")
             logger.info(f"   📊 Context provided: {total_context_length} chars across {len(context_parts)} sections")
             
@@ -325,6 +325,7 @@ async def synthesize_response(
                 openai_api_key=openai_api_key,
                 scenario=parallel_scenario
             )
+            logger.info(f"   ✅ LLM response received: {type(response_text).__name__}")
         else:
             logger.warning(f"⚠️  No context available - using fallback response {scenario_info}")
             logger.info(f"   ❌ Context parts: {len(context_parts)}")
@@ -339,6 +340,18 @@ async def synthesize_response(
                 f"- Dependencies and relationships between components\n"
                 f"- Code implementation details"
             )
+        
+        # ✅ FIX: Add null check before using response_text
+        if response_text is None:
+            logger.error(f"❌ response_text is None - using fallback")
+            response_text = (
+                f"I couldn't generate a response for '{original_query}'. "
+                f"Please try again with a more specific query."
+            )
+        
+        if not isinstance(response_text, str):
+            logger.error(f"❌ response_text is not a string: {type(response_text).__name__} - converting to string")
+            response_text = str(response_text)
         
         logger.info(f"✅ Response synthesized - Length: {len(response_text)} chars")
         
@@ -573,6 +586,7 @@ def _format_memory(memory: List[Dict]) -> str:
         lines.append(f"**{role}:** {content}...")
     return "\n".join(lines) if lines else "No memory available"
     
+
 async def _generate_llm_response(
     query: str,
     context: str,
@@ -581,8 +595,7 @@ async def _generate_llm_response(
 ) -> str:
     """
     Synthesize a natural response from context using LLM.
-    Supports both DeepSeek (development) and OpenAI/GPT-4 (production).
-    Falls back to formatted context if LLM fails.
+    Uses OpenAI/GPT-4 for comprehensive explanations.
     Always returns a response (never fails).
     """
     import os
@@ -598,87 +611,24 @@ async def _generate_llm_response(
         logger.info("✅ Admin operation detected - returning simple success message")
         return "✅ All indexed data has been successfully deleted from Neo4j and Pinecone databases. Your codebase index is now cleared."
     
-    # Determine mode: DEVELOPMENT (DeepSeek) or PRODUCTION (OpenAI)
-    mode = os.getenv("LLM_MODE", "development").lower()  # Default: production
-    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-    
+    # Get LLM mode from environment
+    mode = os.getenv("LLM_MODE", "production").lower()  # Default: production
     logger.info(f"   🔧 LLM Mode: {mode.upper()}")
     
     try:
-        ## ====================================================================
-        # DEVELOPMENT MODE: Use DeepSeek
         # ====================================================================
-        if mode == "development" and deepseek_api_key:
-            logger.info(f"   📤 Sending request to DeepSeek (model: deepseek-chat)")
-            
-            import httpx
-            
-            system_msg = """You are an expert software engineering tutor helping new developers understand a complex codebase.
-
-Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. Structure your answer using WHAT-WHERE-WHY-HOW framework:
-1. WHAT - What is this entity? (definition, purpose, type, location)
-2. WHERE - Where is it used? (parents, dependents, dependencies with counts)
-3. WHY - Why is it designed this way? (patterns, architecture, reasoning)
-4. HOW - How is it implemented? (code examples, implementation details)
-
-Be thorough and detailed. Include file paths, line numbers, relationship counts, and code examples."""
-            
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client_deepseek:
-                    response = await client_deepseek.post(
-                        "https://api.deepseek.com/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {deepseek_api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "deepseek-chat",
-                            "messages": [
-                                {
-                                    "role": "system",
-                                    "content": system_msg
-                                },
-                                {
-                                    "role": "user",
-                                    "content": f"""Query: {query}
-
-IMPORTANT: The user is NEW to this codebase. Provide COMPREHENSIVE, DETAILED explanations.
-
-Available Context:
-{context}
-
-Structure your answer using WHAT-WHERE-WHY-HOW framework. Be thorough and educational."""
-                                }
-                            ],
-                            "temperature": 0.7,
-                            "max_tokens": 1200
-                        }
-                    )
-                    if response.status_code == 200:  # ← FIXED: Now INSIDE async with block
-                        result = response.json()
-                        response_text = result["choices"][0]["message"]["content"]
-                        logger.info("✅ DeepSeek synthesis successful")
-                        return response_text
-                    else:
-                        logger.warning(f"⚠️  DeepSeek API error: {response.status_code} - falling back to OpenAI")
-                        mode = "production"  # Fallback to production
-            except Exception as deepseek_err:
-                logger.warning(f"⚠️  DeepSeek failed: {deepseek_err} - falling back to OpenAI")
-                mode = "production"
+        # USE OPENAI/GPT-4
+        # ====================================================================
+        if not openai_api_key:
+            logger.error("❌ No OpenAI API key provided")
+            logger.warning("   Returning formatted context as fallback")
+            return f"Based on available information:\n\n{context}"
         
-        # ====================================================================
-        # PRODUCTION MODE: Use OpenAI/GPT-4
-        # ====================================================================
-        if mode == "production":
-            if not openai_api_key:
-                logger.warning("⚠️  No OpenAI key - returning formatted context")
-                return context
-            
-            from openai import OpenAI
-            client = OpenAI(api_key=openai_api_key)
-            
-            logger.info(f"   ✅ OpenAI client initialized")
-            logger.info(f"   📤 Sending request to GPT-4 (model: gpt-4)")
+        from openai import OpenAI
+        client = OpenAI(api_key=openai_api_key)
+        
+        logger.info(f"   ✅ OpenAI client initialized")
+        logger.info(f"   📤 Sending request to GPT-4 (model: gpt-4)")
         
         # Comprehensive system prompt for detailed explanations
         system_msg = """You are an expert software engineering tutor helping new developers understand a complex codebase.
@@ -696,7 +646,6 @@ Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. This
 - Clear definition of what this entity is (class, function, module, etc.)
 - Its primary purpose in the system
 - Key responsibilities or functionality
-- Type: {entity_type} | Location: {file_path}:{line_number}
 
 ### 2. **WHERE** - Usage & Impact
 **Parent Context (Where it's defined):**
@@ -705,7 +654,7 @@ Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. This
 
 **Dependents (What depends on it):**
 - List of all entities that use/import/call this entity
-- For each: name, type, and relationship type (IMPORTS, USES, CALLS, INHERITS_FROM)
+- For each: name, type, and relationship type
 - Show the count of dependent components
 
 **Dependencies (What it depends on):**
@@ -717,7 +666,6 @@ Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. This
 - Explain the design pattern or architectural reason
 - Why this entity is designed this way
 - How it fits into the system's overall architecture
-- Any alternative approaches and why this one was chosen
 
 ### 4. **HOW** - Code Implementation
 - Reference specific code snippets from the provided chunks
@@ -727,16 +675,11 @@ Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. This
 
 ## Formatting Rules:
 - Use markdown headers (##, ###) for clear sections
-- Include file paths and line numbers: `file.py:123-456`
+- Include file paths and line numbers
 - Use code blocks with language specification for snippets
 - Create lists for relationships and dependencies
 - Bold important concepts
-- Use **relationship counts** to show impact: "Used by X other components"
-
-## Relationship Interpretation:
-- **Dependents**: "This entity is used by X components" → Shows its importance/impact
-- **Dependencies**: "This entity depends on Y components" → Shows its complexity
-- **Parents**: "Defined in {parent}" → Shows its context/scope
+- Use **relationship counts** to show impact
 
 ## Content Priority:
 1. Start with a 1-2 sentence summary of WHAT
@@ -744,25 +687,9 @@ Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. This
 3. Explain WHY with design reasoning
 4. Show HOW with code examples
 
-## Special Instructions:
-- If an entity has many dependents (>5), emphasize its importance
-- If an entity has many dependencies (>5), explain the complexity
-- Reference the actual code chunks provided
-- Cross-reference related entities mentioned in dependencies
-- Keep explanations accessible to mid-level developers (2-5 years experience)
-- Use technical terms but explain them clearly
-
-## Always Include:
-✅ Component type and location
-✅ Complete list of dependents (with count)
-✅ Complete list of dependencies (with count)
-✅ Parent/context information
-✅ Code examples from provided chunks
-✅ Design pattern or architectural reasoning
-✅ Real file paths and line numbers
-
 IMPORTANT: This is educational content. Be thorough and detailed. Don't be brief."""
         
+        logger.debug(f"   Sending to GPT-4...")
         response = client.chat.completions.create(
             model="gpt-4",
             messages=[
@@ -779,31 +706,33 @@ IMPORTANT: The user is NEW to this codebase. Provide COMPREHENSIVE, DETAILED exp
 Available Context:
 {context}
 
-Structure your answer using the WHAT-WHERE-WHY-HOW framework:
-1. WHAT - What is this entity? (definition, purpose, type, location)
-2. WHERE - Where is it used? (parents, dependents, dependencies with counts and names)
-3. WHY - Why is it designed this way? (patterns, architecture, reasoning)
-4. HOW - How is it implemented? (code examples, actual implementation details)
-
-Be thorough and educational. Include:
-- Exact file paths and line numbers
-- Complete list of all dependents and dependencies
-- Relationship counts showing impact
-- Code examples from provided chunks
-- Design pattern explanation
-
-Do NOT be brief. This is for learning."""
+Structure your answer using the WHAT-WHERE-WHY-HOW framework. Be thorough and educational."""
                 }
             ],
             temperature=0.7,
-            max_tokens=1200  # ← Increased from 1500 to allow detailed responses
+            max_tokens=1200
         )
         
         response_text = response.choices[0].message.content
-        logger.info("✅ LLM synthesis successful")
+        logger.info(f"✅ GPT-4 synthesis successful ({len(response_text)} chars)")
         return response_text
         
+        # ====================================================================
+        # ORIGINAL CODE BELOW (kept for reference, but unreachable in production)
+        # ====================================================================
+        
     except Exception as e:
-        logger.warning(f"⚠️  LLM synthesis failed: {e} - returning formatted context")
-        # ALWAYS return context as fallback - never fail
-        return f"Based on available information:\n\n{context}"
+        logger.error(f"❌ LLM synthesis failed: {e}")
+        import traceback
+        logger.error(f"   Traceback: {traceback.format_exc()}")
+        logger.warning(f"   ⚠️  Returning formatted context as fallback")
+        
+        # ALWAYS return context as fallback - never fail, never return None
+        fallback_response = f"Based on available information:\n\n{context}"
+        
+        if fallback_response is None:
+            logger.error(f"   ❌ CRITICAL: Fallback response is None!")
+            fallback_response = "I encountered an error processing your query. Please try again."
+        
+        logger.info(f"   ✅ Returning fallback response ({len(fallback_response)} chars)")
+        return fallback_response

@@ -79,39 +79,55 @@ async def comprehensive_entity_analysis_handler(
         # ============================================================================
         # STEP 2: Use LLM to find TOP-K most relevant entities
         # ============================================================================
-        logger.info(f"\n🧠 STEP 2: Using LLM to find top {top_k} relevant entities...")
+        logger.info(f"\n STEP 2: Using LLM to find top {top_k} relevant entities...")
         
-        # Format entities for LLM (grouped by type for clarity)
+        # Format entities for LLM - INCLUDE ALL entities for better matching
+        logger.info(f"   📝 Building entity list for LLM ({len(entities)} total entities)...")
         entities_text = "Available entities in codebase:\n\n"
+        
         for etype, names in entity_types_dict.items():
             entities_text += f"{etype}s ({len(names)}):\n"
-            for name in names[:10]:  # Show first 10 of each type
+            # ✅ CHANGED: Include ALL names, not just first 10
+            for name in sorted(names):  # Sort for consistency
                 entities_text += f"  - {name}\n"
-            if len(names) > 10:
-                entities_text += f"  ... and {len(names) - 10} more\n"
             entities_text += "\n"
         
-        llm_prompt = f"""You are an expert at finding relevant code entities. Find TOP {top_k} entities matching the query.
+        logger.debug(f"   📏 Entity list size: {len(entities_text)} chars")
+        logger.debug(f"   📄 First 500 chars:\n{entities_text[:500]}...")
+        
+        llm_prompt = f"""You are an expert at finding relevant code entities in a Python codebase. 
 
 User Query: "{query}"
+
+Below is the COMPLETE list of all entities in the codebase. Your job is to find the TOP {top_k} entities that match this query.
 
 {entities_text}
 
 INSTRUCTIONS:
-1. Find entities that DIRECTLY match the query keywords
-2. Include related entities (dependencies, callers, parents)
-3. Return ALL matching entities up to {top_k}
-4. Rank by relevance to query
+1. Search for entities that DIRECTLY match the query keywords
+2. Look for exact name matches, substring matches, or semantically related entities
+3. Return the TOP {top_k} most relevant entities (or fewer if not found)
+4. Rank by relevance to the query (highest confidence first)
+5. For each entity, explain WHY it matches the query
 
-CRITICAL: Return ONLY a valid JSON array. No markdown, no explanation, just JSON.
+CRITICAL RULES:
+- Return ONLY a valid JSON array. No markdown, no preamble, no explanation.
+- If you find fewer than {top_k} entities, return just those.
+- If you find NO entities, return an empty array: []
 
-Format:
+JSON Format (MUST be valid JSON):
 [
-  {{"entity_name": "EntityName", "entity_type": "Class", "confidence": 0.95, "reason": "directly matches query"}},
-  {{"entity_name": "AnotherEntity", "entity_type": "Function", "confidence": 0.82, "reason": "related to query"}}
+  {{"entity_name": "Dependant", "entity_type": "Class", "confidence": 0.95, "reason": "Exactly matches query keyword"}},
+  {{"entity_name": "Dependency", "entity_type": "Class", "confidence": 0.75, "reason": "Related to query about dependencies"}}
 ]
 
-Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (highest first)."""
+Requirements:
+- entity_name: MUST exist in the list above
+- entity_type: Class, Function, Module, etc.
+- confidence: Float between 0.0 and 1.0
+- reason: Brief explanation of relevance"""
+        
+        logger.info(f"   📊 LLM prompt prepared ({len(llm_prompt)} chars)")
         
         openai_api_key = os.getenv("OPENAI_API_KEY")
         if not openai_api_key:
@@ -152,7 +168,7 @@ Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (high
         llm_result = response.json()
         llm_response = llm_result["choices"][0]["message"]["content"]
         
-        logger.info(f"   🧠 LLM response received: {llm_response[:100]}...")
+        logger.info(f"    LLM response received: {llm_response[:100]}...")
         
         # Parse LLM response
         # Parse LLM response - robust JSON extraction
@@ -212,6 +228,49 @@ Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (high
             reason = entity_info.get("reason")
             
             logger.info(f"   📍 Fetching relationships for: {entity_name} ({entity_type})")
+            logger.debug(f"      → Searching for entity with name: {entity_name}")
+            
+            # FIRST: Verify entity exists in Neo4j
+            verify_entity_query = """
+            MATCH (e) WHERE toLower(e.name) = toLower($name)
+            RETURN {
+                name: e.name,
+                type: labels(e)[0],
+                module: e.module,
+                line: e.line_number,
+                found: true
+            } as entity_info
+            LIMIT 1
+            """
+            
+            logger.debug(f"      ⏳ Verifying entity exists...")
+            verify_result = await neo4j_service.execute_query(verify_entity_query, {"name": entity_name})
+            
+            if not verify_result:
+                logger.warning(f"      ❌ Entity NOT FOUND in Neo4j: '{entity_name}'")
+                logger.debug(f"         This entity was returned by LLM but doesn't exist in database")
+                # Still continue but with 0 relationships
+                entity_with_rel = {
+                    "entity_name": entity_name,
+                    "entity_type": entity_type,
+                    "confidence": confidence,
+                    "reason": reason,
+                    "module": "N/A",
+                    "line_number": 0,
+                    "dependents": [],
+                    "dependencies": [],
+                    "parents": [],
+                    "dependents_count": 0,
+                    "dependencies_count": 0,
+                    "parents_count": 0,
+                    "error": f"Entity not found in Neo4j database"
+                }
+                entities_with_relationships.append(entity_with_rel)
+                continue
+            else:
+                entity_found = verify_result[0]
+                entity_data = entity_found.get("entity_info") if isinstance(entity_found, dict) else entity_found["entity_info"]
+                logger.debug(f"      ✅ Entity found: {entity_data.get('name')} ({entity_data.get('type')})")
             
             # Get relationships for this entity
             relationships_query = """
@@ -220,7 +279,7 @@ Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (high
             
             OPTIONAL MATCH (dependent)-[rel_in:IMPORTS|CALLS|INHERITS_FROM|CONTAINS]->(e)
             WITH e, dependent, rel_in, 
-                 collect({
+                 collect(DISTINCT {
                      name: dependent.name,
                      type: labels(dependent)[0],
                      relation: type(rel_in),
@@ -229,7 +288,7 @@ Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (high
             
             OPTIONAL MATCH (e)-[rel_out:IMPORTS|CALLS|INHERITS_FROM|CONTAINS]->(dependency)
             WITH e, incoming_deps,
-                 collect({
+                 collect(DISTINCT {
                      name: dependency.name,
                      type: labels(dependency)[0],
                      relation: type(rel_out),
@@ -238,7 +297,7 @@ Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (high
             
             OPTIONAL MATCH (parent)-[rel_contains:CONTAINS]->(e)
             WITH e, incoming_deps, outgoing_deps,
-                 collect({
+                 collect(DISTINCT {
                      name: parent.name,
                      type: labels(parent)[0],
                      relation: type(rel_contains)
@@ -260,18 +319,31 @@ Return {top_k} or fewer entities. Confidence: 0.0-1.0. Order by confidence (high
             } as result
             """
             
+            logger.debug(f"      ⏳ Executing relationship query...")
+            
             try:
                 rel_result = await neo4j_service.execute_query(relationships_query, {"name": entity_name})
+                logger.debug(f"      Query result: {rel_result is not None}")
                 
                 if rel_result:
+                    logger.debug(f"      Got {len(rel_result)} result(s)")
                     record = rel_result[0]
+                    logger.debug(f"      Record type: {type(record).__name__}")
+                    logger.debug(f"      Record keys: {list(record.keys()) if isinstance(record, dict) else 'not a dict'}")
+                    
                     result_data = record.get("result") if isinstance(record, dict) else record["result"]
+                    logger.debug(f"      Result data type: {type(result_data).__name__}")
                     
                     dependents = result_data.get("dependents", [])
                     dependencies = result_data.get("dependencies", [])
                     parents = result_data.get("parents", [])
                     stats = result_data.get("stats", {})
+                    
+                    logger.debug(f"      Dependents: {len(dependents)} items")
+                    logger.debug(f"      Dependencies: {len(dependencies)} items")
+                    logger.debug(f"      Parents: {len(parents)} items")
                 else:
+                    logger.warning(f"      ⚠️  Query returned no results")
                     dependents = []
                     dependencies = []
                     parents = []

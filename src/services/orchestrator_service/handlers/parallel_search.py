@@ -35,24 +35,22 @@ async def parallel_entity_and_semantic_search(
         has_valid_entity = entity_name and entity_name.lower() != "unknown"
         logger.info(f"   ✓ Valid entity: {has_valid_entity}")
         
-        # TASK 1: Neo4j direct entity search (skip if no valid entity)
-        if has_valid_entity:
-            logger.info(f"   📍 Task 1: Neo4j direct entity search for '{entity_name}'")
-            neo4j_task = call_agent_tool(
-                agent="graph_query",
-                tool="find_entity",
-                input_params={"name": entity_name},
-                http_client=http_client,
-                agent_urls=agent_urls
-            )
-        else:
-            logger.info(f"   ⏭️  Task 1: Skipping direct Neo4j search (no valid entity)")
-            async def failed_neo4j():
-                return ToolResult(success=False, error=f"No valid entity name provided")
-            neo4j_task = failed_neo4j()
+        # TASK 1: SKIPPED - Use comprehensive_entity_analysis instead (handles both entity finding + relationships)
+        # The comprehensive_entity_analysis tool is superior as it:
+        # - Finds multiple relevant entities (not just one)
+        # - Automatically fetches relationships for each
+        # - Uses LLM to rank by relevance
+        # So we skip the direct find_entity call
+        logger.info(f"   📍 [TASK 1] SKIPPED - find_entity tool doesn't exist")
+        logger.info(f"      → Using comprehensive_entity_analysis instead (does both entity finding + relationships)")
+        async def skipped_neo4j():
+            return ToolResult(success=False, error="Skipped - using comprehensive_entity_analysis instead")
+        neo4j_task = skipped_neo4j()
         
-        # TASK 1B: Comprehensive entity analysis (LLM ranks top-5 + fetches relationships for each)
-        logger.info(f"   📍 Task 1B: Comprehensive entity analysis (top-5 entities + relationships)")
+        # TASK 1B: Comprehensive entity analysis (THE MAIN TASK)
+        logger.info(f"   📍 [TASK 1B] Comprehensive entity analysis (LLM rank top-5 entities + relationships)")
+        logger.debug(f"      Agent: graph_query | Tool: comprehensive_entity_analysis")
+        logger.debug(f"      Query: {query[:80]}... | Top K: 5")
         neo4j_all_entities_task = call_agent_tool(
             agent="graph_query",
             tool="comprehensive_entity_analysis",
@@ -61,24 +59,16 @@ async def parallel_entity_and_semantic_search(
             agent_urls=agent_urls
         )
         
-        # TASK 1C: Neo4j exhaustive relationships for direct entity (ALWAYS run if entity valid)
-        if has_valid_entity:
-            logger.info(f"   📍 Task 1C: Neo4j exhaustive relationships for '{entity_name}'")
-            neo4j_relationships_task = call_agent_tool(
-                agent="graph_query",
-                tool="comprehensive_entity_analysis",  # ← CORRECT NAME (no _handler)
-                input_params={"query": query, "top_k": 5},
-                http_client=http_client,
-                agent_urls=agent_urls
-            )
-        else:
-            logger.info(f"   ⏭️  Task 1C: Skipping relationships search (no valid entity)")
-            async def failed_rel():
-                return ToolResult(success=False, error="No valid entity name provided")
-            neo4j_relationships_task = failed_rel()
+        # TASK 1C: SKIPPED - comprehensive_entity_analysis already fetches ALL relationships
+        # No need to call it twice - Task 1B already includes relationship fetching
+        logger.info(f"   📍 [TASK 1C] SKIPPED - relationships already fetched in Task 1B")
+        async def skipped_rel():
+            return ToolResult(success=False, error="Skipped - comprehensive_entity_analysis handles this")
+        neo4j_relationships_task = skipped_rel()
         
-        # TASK 2: Pinecone semantic search (always run)
-        logger.info(f"   📍 Task 2: Pinecone semantic search")
+        # TASK 2: Pinecone semantic search
+        logger.info(f"   📍 [TASK 2] Pinecone semantic search")
+        logger.debug(f"      Agent: indexer | Tool: semantic_search")
         # Enrich query with entity context for better semantic search results
         enriched_query = query
         if has_valid_entity:
@@ -107,33 +97,59 @@ async def parallel_entity_and_semantic_search(
             return_exceptions=True
         )
         
+        logger.info(f"\n   ⏳ [RESULTS] Processing {len(results)} task results...")
+        
         neo4j_result = results[0] if len(results) > 0 else None
         neo4j_all_entities_result = results[1] if len(results) > 1 else None
         neo4j_relationships_result = results[2] if len(results) > 2 else None
         pinecone_result = results[3] if len(results) > 3 else None
         
+        logger.info(f"   Task 1 result type: {type(neo4j_result).__name__}")
+        logger.info(f"   Task 1B result type: {type(neo4j_all_entities_result).__name__}")
+        logger.info(f"   Task 1C result type: {type(neo4j_relationships_result).__name__}")
+        logger.info(f"   Task 2 result type: {type(pinecone_result).__name__}")
+        
         # Handle exceptions
         if isinstance(neo4j_result, Exception):
-            logger.warning(f"   ⚠️  Neo4j direct search failed: {str(neo4j_result)}")
+            logger.error(f"   ❌ [TASK 1] Exception occurred: {type(neo4j_result).__name__}")
+            logger.error(f"      Message: {str(neo4j_result)}")
             neo4j_result = ToolResult(success=False, error=str(neo4j_result))
         
         if isinstance(neo4j_all_entities_result, Exception):
-            logger.warning(f"   ⚠️  Neo4j multi-entity search failed: {str(neo4j_all_entities_result)}")
+            logger.error(f"   ❌ [TASK 1B] Exception occurred: {type(neo4j_all_entities_result).__name__}")
+            logger.error(f"      Message: {str(neo4j_all_entities_result)}")
             neo4j_all_entities_result = ToolResult(success=False, error=str(neo4j_all_entities_result))
         
         if isinstance(neo4j_relationships_result, Exception):
-            logger.warning(f"   ⚠️  Neo4j relationships search failed: {str(neo4j_relationships_result)}")
+            logger.error(f"   ❌ [TASK 1C] Exception occurred: {type(neo4j_relationships_result).__name__}")
+            logger.error(f"      Message: {str(neo4j_relationships_result)}")
             neo4j_relationships_result = ToolResult(success=False, error=str(neo4j_relationships_result))
         
         if isinstance(pinecone_result, Exception):
-            logger.warning(f"   ⚠️  Pinecone search failed: {str(pinecone_result)}")
+            logger.error(f"   ❌ [TASK 2] Exception occurred: {type(pinecone_result).__name__}")
+            logger.error(f"      Message: {str(pinecone_result)}")
             pinecone_result = ToolResult(success=False, error=str(pinecone_result))
         
         # Log results
-        logger.info(f"   ✅ Neo4j Direct: {'Success' if neo4j_result.success else 'Failed'}")
-        logger.info(f"   ✅ Neo4j Multi-Entity: {'Success' if neo4j_all_entities_result.success else 'Failed'}")
-        logger.info(f"   ✅ Neo4j Relationships: {'Success' if neo4j_relationships_result.success else 'Failed'}")
-        logger.info(f"   ✅ Pinecone: {'Success' if pinecone_result.success else 'Failed'}")
+        logger.info(f"\n   [RESULT SUMMARY]")
+        logger.info(f"   Task 1 (Neo4j Direct): SKIPPED (not available - using Task 1B instead)")
+        
+        logger.info(f"   Task 1B (Neo4j Multi-Entity + Relationships): {'✅ SUCCESS' if neo4j_all_entities_result.success else '❌ FAILED'}")
+        if neo4j_all_entities_result.success and neo4j_all_entities_result.data:
+            relevant_count = len(neo4j_all_entities_result.data.get("relevant_entities", []))
+            total_rels = neo4j_all_entities_result.data.get("total_relationships", 0)
+            logger.info(f"      Found: {relevant_count} entities with {total_rels} total relationships")
+        else:
+            logger.error(f"      Error: {neo4j_all_entities_result.error}")
+        
+        logger.info(f"   Task 1C (Neo4j Relationships): SKIPPED (already in Task 1B)")
+        
+        logger.info(f"   Task 2 (Pinecone): {'✅ SUCCESS' if pinecone_result.success else '❌ FAILED'}")
+        if pinecone_result.success and pinecone_result.data:
+            chunks_count = len(pinecone_result.data.get("chunks", []))
+            logger.info(f"      Found: {chunks_count} code chunks")
+        else:
+            logger.error(f"      Error: {pinecone_result.error}")
         
         # Log detailed results
         if not neo4j_result.success:

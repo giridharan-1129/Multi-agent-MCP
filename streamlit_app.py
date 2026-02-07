@@ -723,7 +723,7 @@ with message_container:
                     
                     st.divider()
                     
-                    with st.expander(f"🧠 Thinking Process ({iterations} iterations)", expanded=False):
+                    with st.expander(f" Thinking Process ({iterations} iterations)", expanded=False):
                         for i, step in enumerate(thinking_steps, 1):
                             st.caption(f"**Step {i}:** {step[:300]}...")
                 
@@ -816,47 +816,6 @@ with message_container:
                                     else:
                                         st.info("ℹ️ No dependents found")
                     
-                    # ====================================================================
-                    # CODE ANALYST SOURCES (Implementation explanations)
-                    # ====================================================================
-                    code_analyst_sources = [s for s in retrieved_sources if s.get("source_type") == "code_analyst"]
-                    
-                    if code_analyst_sources:
-                        st.markdown("#### 💡 **Code Analyst - Implementation Explanation**")
-                        
-                        for k, source in enumerate(code_analyst_sources, 1):
-                            with st.container(border=True):
-                                entity_name = source.get("entity_name", "Unknown")
-                                entity_type = source.get("entity_type", "Unknown")
-                                module = source.get("module", "N/A")
-                                line_num = source.get("line_number", "N/A")
-                                calls_count = source.get("calls_count", 0)
-                                called_by_count = source.get("called_by_count", 0)
-                                explanation = source.get("explanation", "")
-                                
-                                st.markdown(f"""
-**{entity_name}** (`{entity_type}`)
-- **Location:** `{module}:{line_num}`
-- **Calls:** {calls_count} | **Called by:** {called_by_count}
-                                """)
-                                
-                                # Toggle to show/hide explanation
-                                session_key = str(st.session_state.session_id) if st.session_state.session_id else "new"
-                                button_key = f"analyst_btn_{session_key}_{k}"
-                                state_key = f"analyst_state_{session_key}_{k}"
-                                
-                                if state_key not in st.session_state:
-                                    st.session_state[state_key] = False
-                                
-                                col_title, col_btn = st.columns([0.9, 0.1])
-                                
-                                with col_btn:
-                                    if st.button("📖", key=button_key, help="View explanation"):
-                                        st.session_state[state_key] = not st.session_state[state_key]
-                                
-                                if st.session_state.get(state_key, False):
-                                    st.markdown("---")
-                                    st.markdown(explanation)
                                                             
                     if tools_used:
                         st.write("**🔧 Tools Used:**")
@@ -1076,7 +1035,7 @@ if query:
         try:
             with st.chat_message("assistant"):
                 # Agentic AI Mode
-                with st.spinner("🧠 Orchestrator is analyzing and chaining tools..."):
+                with st.spinner(" Orchestrator is analyzing and chaining tools..."):
                     payload = {
                         "query": query,
                         "session_id": st.session_state.session_id
@@ -1127,7 +1086,7 @@ if query:
                             f"Agents routed: {', '.join(agents_used) if agents_used else 'None'}"
                         ]
                         
-                        with st.expander(f"🧠 Thinking Process ({len(thinking_steps)} steps)", expanded=False):
+                        with st.expander(f" Thinking Process ({len(thinking_steps)} steps)", expanded=False):
                             for i, step in enumerate(thinking_steps, 1):
                                 st.caption(f"**Step {i}:** {step}")
                         

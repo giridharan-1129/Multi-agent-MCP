@@ -99,26 +99,36 @@ async def explain_implementation_handler(
 ) -> ToolResult:
     """Generate explanation of code implementation with full details."""
     try:
-        # Query to get entity details with relationships
+        # Query to get entity details with relationships (improved: supports ALL relationship types and node types)
         query = """
         MATCH (e) WHERE toLower(e.name) = toLower($name)
-        OPTIONAL MATCH (e)-[:CALLS]->(called:Function)
-        OPTIONAL MATCH (caller:Function)-[:CALLS]->(e)
-        OPTIONAL MATCH (e)-[:IMPORTS]->(imp)
+        
+        // Outgoing relationships - what this entity USES/CALLS/IMPORTS
+        OPTIONAL MATCH (e)-[rel_out:CALLS|IMPORTS|USES|DEPENDS_ON]->(outgoing)
+        
+        // Incoming relationships - what USES/CALLS this entity
+        OPTIONAL MATCH (incoming)-[rel_in:CALLS|IMPORTS|USES|DEPENDS_ON]->(e)
+        
+        // Inheritance outgoing - what this entity inherits FROM
         OPTIONAL MATCH (e)-[:INHERITS_FROM]->(parent)
+        
+        // Inheritance incoming - what inherits FROM this entity
         OPTIONAL MATCH (child)-[:INHERITS_FROM]->(e)
+        
         RETURN 
             e.name as entity_name,
             labels(e)[0] as entity_type,
             e.docstring as docstring,
             e.module as module,
             e.line_number as line_number,
-            collect(distinct called.name) as calls,
-            collect(distinct caller.name) as called_by,
-            collect(distinct imp.name) as imports,
+            collect(distinct {name: outgoing.name, type: labels(outgoing)[0], relation: type(rel_out)}) as outgoing_rels,
+            collect(distinct {name: incoming.name, type: labels(incoming)[0], relation: type(rel_in)}) as incoming_rels,
             collect(distinct parent.name) as parent_class,
             collect(distinct child.name) as child_classes
         """
+        
+        logger.info(f"📍 Querying for entity: {entity_name}")
+        logger.debug(f"   Using comprehensive relationship query")
         
         result = await neo4j_service.execute_query(query, {"name": entity_name})
         
@@ -137,12 +147,19 @@ async def explain_implementation_handler(
         docstring = data.get("docstring", "No documentation")
         module = data.get("module", "N/A")
         line_num = data.get("line_number", "N/A")
-        calls = [c for c in data.get("calls", []) if c]
-        called_by = [c for c in data.get("called_by", []) if c]
-        imports = [i for i in data.get("imports", []) if i]
+        
+        # ✅ FIXED: Extract outgoing and incoming relationships
+        outgoing_rels = [r for r in data.get("outgoing_rels", []) if isinstance(r, dict) and r.get("name")]
+        incoming_rels = [r for r in data.get("incoming_rels", []) if isinstance(r, dict) and r.get("name")]
+        
         parents = [p for p in data.get("parent_class", []) if p]
         children = [c for c in data.get("child_classes", []) if c]
         
+        logger.info(f"   Found: {len(outgoing_rels)} outgoing rels, {len(incoming_rels)} incoming rels")
+        logger.debug(f"      Outgoing: {[r.get('name') for r in outgoing_rels]}")
+        logger.debug(f"      Incoming: {[r.get('name') for r in incoming_rels]}")
+        
+        # ✅ FIXED: Better formatting with relationship types
         explanation = f"""
 **{entity_name}** (`{entity_type}`)
 - **Location:** `{module}:{line_num}`
@@ -151,24 +168,21 @@ async def explain_implementation_handler(
 **What it does:**
 {docstring}
 
-**Calls (Functions/Methods it invokes):** {len(calls)} total
-{chr(10).join(f"  • {c}" for c in calls[:10]) if calls else "  • None"}
-{f"  ... and {len(calls) - 10} more" if len(calls) > 10 else ""}
+**Dependencies (What {entity_name} uses/imports/depends on):** {len(outgoing_rels)} total
+{chr(10).join(f"  • {r.get('name')} ({r.get('type')}) via {r.get('relation', 'USES')}" for r in outgoing_rels[:10]) if outgoing_rels else "  • None"}
+{f"  ... and {len(outgoing_rels) - 10} more" if len(outgoing_rels) > 10 else ""}
 
-**Called by (Who uses it):** {len(called_by)} components
-{chr(10).join(f"  • {c}" for c in called_by[:10]) if called_by else "  • None"}
-{f"  ... and {len(called_by) - 10} more" if len(called_by) > 10 else ""}
-
-**Imports:** {len(imports)} dependencies
-{chr(10).join(f"  • {i}" for i in imports[:5]) if imports else "  • None"}
-{f"  ... and {len(imports) - 5} more" if len(imports) > 5 else ""}
+**Dependents (What uses/depends on {entity_name}):** {len(incoming_rels)} components
+{chr(10).join(f"  • {r.get('name')} ({r.get('type')}) via {r.get('relation', 'USES')}" for r in incoming_rels[:10]) if incoming_rels else "  • None"}
+{f"  ... and {len(incoming_rels) - 10} more" if len(incoming_rels) > 10 else ""}
 
 **Inheritance:**
 {f"Inherits from: {', '.join(parents)}" if parents else "No parent class"}
 {f"Subclasses: {', '.join(children)}" if children else "No subclasses"}
         """
         
-        logger.info(f"Implementation explained: {entity_name}")
+        logger.info(f"✅ Implementation explained: {entity_name}")
+        logger.info(f"   - Outgoing: {len(outgoing_rels)}, Incoming: {len(incoming_rels)}")
         
         return ToolResult(
             success=True,
@@ -178,9 +192,9 @@ async def explain_implementation_handler(
                 "module": module,
                 "line_number": line_num,
                 "explanation": explanation.strip(),
-                "calls_count": len(calls),
-                "called_by_count": len(called_by),
-                "imports_count": len(imports)
+                "calls_count": len(incoming_rels),  # Changed: incoming rels = who calls this
+                "called_by_count": len(outgoing_rels),  # Changed: outgoing rels = what this calls
+                "imports_count": len(outgoing_rels)  # Same as calls_count
             }
         )
     except Exception as e:
