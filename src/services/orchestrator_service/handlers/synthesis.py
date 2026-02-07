@@ -76,29 +76,55 @@ async def synthesize_response(
                 parallel_scenario = data.get("scenario")
                 logger.info(f"📍 Parallel search scenario: {parallel_scenario}")
                 
-                if data.get("neo4j_entity"):
+                # Handle BOTH singular (neo4j_entity) and plural (neo4j_entities)
+                if data.get("neo4j_entity") or data.get("neo4j_entities"):
                     agents_used.add("graph_query")
                     
-                    # Extract Neo4j entity as source (NEW FORMAT)
-                    neo4j_entity = data.get("neo4j_entity", {})
-                    logger.info(f"      ✅ Neo4j entity: {neo4j_entity.get('entity_name')} ({neo4j_entity.get('entity_type')})")
-                    logger.debug(f"   🔍 Neo4j entity: {neo4j_entity}")
+                    # Check for plural first (multi-entity scenario)
+                    if data.get("neo4j_entities"):
+                        neo4j_entities_list = data.get("neo4j_entities", [])
+                        logger.info(f"      ✅ Neo4j multi-entities: {len(neo4j_entities_list)} entities found")
+                        
+                        for neo4j_entity in neo4j_entities_list:
+                            logger.info(f"         - {neo4j_entity.get('entity_name')} ({neo4j_entity.get('entity_type')}, confidence: {neo4j_entity.get('confidence')})")
+                            
+                            if neo4j_entity.get("entity_name"):
+                                neo4j_source = {
+                                    "source_type": "neo4j",
+                                    "type": "entity",
+                                    "entity_name": neo4j_entity.get("entity_name"),
+                                    "entity_type": neo4j_entity.get("entity_type", "Unknown"),
+                                    "module": neo4j_entity.get("module", "N/A"),
+                                    "line_number": neo4j_entity.get("line_number", "N/A"),
+                                    "confidence": neo4j_entity.get("confidence", 0),
+                                    "reason": neo4j_entity.get("reason", ""),
+                                    "dependents_count": neo4j_entity.get("dependents_count", 0),
+                                    "dependencies_count": neo4j_entity.get("dependencies_count", 0),
+                                    "parents_count": neo4j_entity.get("parents_count", 0)
+                                }
+                                retrieved_sources.append(neo4j_source)
+                                neo4j_context.append(neo4j_entity)
                     
-                    # Use the formatted entity directly
-                    if neo4j_entity.get("entity_name"):
-                        neo4j_source = {
-                            "source_type": "neo4j",
-                            "type": "entity",
-                            "entity_name": neo4j_entity.get("entity_name"),
-                            "entity_type": neo4j_entity.get("entity_type", "Unknown"),
-                            "module": neo4j_entity.get("module", "N/A"),
-                            "line_number": neo4j_entity.get("line_number", "N/A"),
-                            "properties": neo4j_entity.get("properties", {})
-                        }
-                        retrieved_sources.append(neo4j_source)
-                        neo4j_context.append(neo4j_entity)
-                    else:
-                        logger.warning(f"   ⚠️  Neo4j entity missing 'entity_name': {neo4j_entity}")
+                    # Handle singular (direct entity match)
+                    elif data.get("neo4j_entity"):
+                        neo4j_entity = data.get("neo4j_entity", {})
+                        logger.info(f"      ✅ Neo4j entity: {neo4j_entity.get('entity_name')} ({neo4j_entity.get('entity_type')})")
+                        logger.debug(f"   🔍 Neo4j entity: {neo4j_entity}")
+                        
+                        if neo4j_entity.get("entity_name"):
+                            neo4j_source = {
+                                "source_type": "neo4j",
+                                "type": "entity",
+                                "entity_name": neo4j_entity.get("entity_name"),
+                                "entity_type": neo4j_entity.get("entity_type", "Unknown"),
+                                "module": neo4j_entity.get("module", "N/A"),
+                                "line_number": neo4j_entity.get("line_number", "N/A"),
+                                "properties": neo4j_entity.get("properties", {})
+                            }
+                            retrieved_sources.append(neo4j_source)
+                            neo4j_context.append(neo4j_entity)
+                        else:
+                            logger.warning(f"   ⚠️  Neo4j entity missing 'entity_name': {neo4j_entity}")
 
                 if data.get("pinecone_chunks"):
                     agents_used.add("code_analyst")
@@ -201,9 +227,41 @@ async def synthesize_response(
             
             # Handle code_analyst results
             elif agent_name == "code_analyst" and success:
+                logger.info(f"   📍 Code Analyst result: {tool_name}")
+                
+                # Extract explanation data
+                if tool_name == "explain_implementation":
+                    entity_name = data.get("entity_name", "Unknown")
+                    entity_type = data.get("entity_type", "Unknown")
+                    module = data.get("module", "N/A")
+                    line_number = data.get("line_number", "N/A")
+                    explanation = data.get("explanation", "")
+                    calls_count = data.get("calls_count", 0)
+                    called_by_count = data.get("called_by_count", 0)
+                    
+                    logger.info(f"      ✅ Entity: {entity_name} ({entity_type})")
+                    logger.info(f"      ✅ Calls: {calls_count}, Called by: {called_by_count}")
+                    
+                    # Add as source for citations
+                    analyst_source = {
+                        "source_type": "code_analyst",
+                        "type": "explanation",
+                        "entity_name": entity_name,
+                        "entity_type": entity_type,
+                        "module": module,
+                        "line_number": line_number,
+                        "explanation": explanation,
+                        "calls_count": calls_count,
+                        "called_by_count": called_by_count
+                    }
+                    retrieved_sources.append(analyst_source)
+                
+                # Add to context for LLM
                 code_analyst_context.append({
                     "tool": tool_name,
-                    "data": data
+                    "data": data,
+                    "entity_name": data.get("entity_name", ""),
+                    "explanation": data.get("explanation", "")
                 })
             
             # Handle regular graph_query
@@ -382,6 +440,71 @@ def _format_context(context: List[Any]) -> str:
                 if dependents_count == 0 and dependencies_count == 0 and parents_count == 0:
                     lines.append(f"⚠️ **No relationships found** - {entity} is isolated in the codebase")
             
+           # Check if this is a multi-entity from comprehensive_entity_analysis (has 'entity_name')
+            elif "entity_name" in item and "entity_type" in item:
+                entity_name = item.get("entity_name", "Unknown")
+                entity_type = item.get("entity_type", "Unknown")
+                confidence = item.get("confidence", 0)
+                reason = item.get("reason", "")
+                module = item.get("module", "N/A")
+                line_num = item.get("line_number", "N/A")
+                
+                # Relationships counts
+                dependents_count = item.get("dependents_count", 0)
+                dependencies_count = item.get("dependencies_count", 0)
+                parents_count = item.get("parents_count", 0)
+                
+                dependents = item.get("dependents", [])
+                dependencies = item.get("dependencies", [])
+                parents = item.get("parents", [])
+                
+                # Header with confidence
+                lines.append(f"## **{entity_name}** ({entity_type}) - Confidence: {confidence:.1%}")
+                if reason:
+                    lines.append(f"*Reason: {reason}*")
+                lines.append(f"- **Location:** {module}:{line_num}")
+                lines.append("")
+                
+                # What contains this entity (parents/context)
+                if parents_count > 0:
+                    lines.append(f"### 📦 **Where It's Defined ({parents_count} parent)**")
+                    for parent in parents:
+                        parent_name = parent.get("name", "Unknown")
+                        parent_type = parent.get("type", "Unknown")
+                        lines.append(f"  • Defined in: **{parent_name}** ({parent_type})")
+                    lines.append("")
+                
+                # What this entity uses/depends on (dependencies/outgoing)
+                if dependencies_count > 0:
+                    lines.append(f"### 🔗 **Dependencies** ({dependencies_count} - What {entity_name} uses/imports):")
+                    for dep in dependencies[:15]:
+                        dep_name = dep.get("name", "Unknown")
+                        dep_type = dep.get("type", "Unknown")
+                        relation = dep.get("relation", "USES")
+                        lines.append(f"  • {dep_name} ({dep_type}) via {relation}")
+                    if dependencies_count > 15:
+                        lines.append(f"  ... and {dependencies_count - 15} more")
+                    lines.append("")
+                
+                # What uses this entity (dependents/incoming)
+                if dependents_count > 0:
+                    lines.append(f"### 👥 **Dependents** ({dependents_count} - What depends on {entity_name}):")
+                    lines.append(f"This entity is used by {dependents_count} other component(s):")
+                    for dep in dependents[:20]:
+                        dep_name = dep.get("name", "Unknown")
+                        dep_type = dep.get("type", "Unknown")
+                        relation = dep.get("relation", "USES")
+                        module_info = dep.get("module", "")
+                        lines.append(f"  • **{dep_name}** ({dep_type}) via {relation} {f'[{module_info}]' if module_info else ''}")
+                    if dependents_count > 20:
+                        lines.append(f"  ... and {dependents_count - 20} more")
+                    lines.append("")
+                
+                # Summary
+                if dependents_count == 0 and dependencies_count == 0 and parents_count == 0:
+                    lines.append(f"⚠️ **No relationships found** - {entity_name} is isolated in the codebase")
+                lines.append("")
+            
             # Check if this is a Neo4j entity (has 'name', 'type', 'properties')
             elif "name" in item and "type" in item and item.get("type") != "relationships":
                 entity_name = item.get("name", "Unknown")
@@ -412,19 +535,35 @@ def _format_context(context: List[Any]) -> str:
 
 
 def _format_code_analysis(analysis: List[Dict]) -> str:
-    """Format code analyst results."""
+    """Format code analyst results with implementation details."""
     lines = []
     for item in analysis:
         tool = item.get("tool", "unknown")
         data = item.get("data", {})
-        lines.append(f"**Tool:** {tool}")
-        if isinstance(data, dict):
-            for key, value in data.items():
-                if value and key not in ["error"]:
-                    lines.append(f"- {key}: {str(value)[:300]}")
+        entity_name = item.get("entity_name", "Unknown")
+        explanation = item.get("explanation", "")
+        
+        # For explain_implementation tool
+        if tool == "explain_implementation" and explanation:
+            lines.append(f"## **Implementation Details: {entity_name}**")
+            lines.append("")
+            lines.append(explanation)
+            lines.append("")
+        else:
+            # Generic format for other tools
+            lines.append(f"**Tool:** {tool}")
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if value and key not in ["error", "explanation", "entity_name"]:
+                        if isinstance(value, list) and len(value) > 0:
+                            lines.append(f"- {key}: {', '.join(map(str, value[:5]))}")
+                        elif isinstance(value, dict):
+                            lines.append(f"- {key}: {len(value)} items")
+                        elif isinstance(value, str):
+                            lines.append(f"- {key}: {value[:200]}")
+                        else:
+                            lines.append(f"- {key}: {str(value)[:200]}")
     return "\n".join(lines) if lines else "No analysis available"
-
-
 def _format_memory(memory: List[Dict]) -> str:
     """Format memory context."""
     lines = []
@@ -441,10 +580,13 @@ async def _generate_llm_response(
     scenario: str = None
 ) -> str:
     """
-    Use GPT-4 to synthesize a natural response from context.
+    Synthesize a natural response from context using LLM.
+    Supports both DeepSeek (development) and OpenAI/GPT-4 (production).
     Falls back to formatted context if LLM fails.
     Always returns a response (never fails).
     """
+    import os
+    
     logger.info(f"\n🤖 LLM SYNTHESIS FUNCTION CALLED")
     logger.info(f"   📝 Query: {query[:100]}...")
     logger.info(f"   📏 Context length: {len(context)} chars")
@@ -456,16 +598,87 @@ async def _generate_llm_response(
         logger.info("✅ Admin operation detected - returning simple success message")
         return "✅ All indexed data has been successfully deleted from Neo4j and Pinecone databases. Your codebase index is now cleared."
     
+    # Determine mode: DEVELOPMENT (DeepSeek) or PRODUCTION (OpenAI)
+    mode = os.getenv("LLM_MODE", "development").lower()  # Default: production
+    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
+    
+    logger.info(f"   🔧 LLM Mode: {mode.upper()}")
+    
     try:
-        if not openai_api_key:
-            logger.warning("⚠️  No OpenAI key - returning formatted context")
-            return context
+        ## ====================================================================
+        # DEVELOPMENT MODE: Use DeepSeek
+        # ====================================================================
+        if mode == "development" and deepseek_api_key:
+            logger.info(f"   📤 Sending request to DeepSeek (model: deepseek-chat)")
+            
+            import httpx
+            
+            system_msg = """You are an expert software engineering tutor helping new developers understand a complex codebase.
+
+Provide COMPREHENSIVE, EDUCATIONAL explanations using the provided context. Structure your answer using WHAT-WHERE-WHY-HOW framework:
+1. WHAT - What is this entity? (definition, purpose, type, location)
+2. WHERE - Where is it used? (parents, dependents, dependencies with counts)
+3. WHY - Why is it designed this way? (patterns, architecture, reasoning)
+4. HOW - How is it implemented? (code examples, implementation details)
+
+Be thorough and detailed. Include file paths, line numbers, relationship counts, and code examples."""
+            
+            try:
+                async with httpx.AsyncClient(timeout=60.0) as client_deepseek:
+                    response = await client_deepseek.post(
+                        "https://api.deepseek.com/chat/completions",
+                        headers={
+                            "Authorization": f"Bearer {deepseek_api_key}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [
+                                {
+                                    "role": "system",
+                                    "content": system_msg
+                                },
+                                {
+                                    "role": "user",
+                                    "content": f"""Query: {query}
+
+IMPORTANT: The user is NEW to this codebase. Provide COMPREHENSIVE, DETAILED explanations.
+
+Available Context:
+{context}
+
+Structure your answer using WHAT-WHERE-WHY-HOW framework. Be thorough and educational."""
+                                }
+                            ],
+                            "temperature": 0.7,
+                            "max_tokens": 1200
+                        }
+                    )
+                    if response.status_code == 200:  # ← FIXED: Now INSIDE async with block
+                        result = response.json()
+                        response_text = result["choices"][0]["message"]["content"]
+                        logger.info("✅ DeepSeek synthesis successful")
+                        return response_text
+                    else:
+                        logger.warning(f"⚠️  DeepSeek API error: {response.status_code} - falling back to OpenAI")
+                        mode = "production"  # Fallback to production
+            except Exception as deepseek_err:
+                logger.warning(f"⚠️  DeepSeek failed: {deepseek_err} - falling back to OpenAI")
+                mode = "production"
         
-        from openai import OpenAI
-        client = OpenAI(api_key=openai_api_key)
-        
-        logger.info(f"   ✅ OpenAI client initialized")
-        logger.info(f"   📤 Sending request to GPT-4 (model: gpt-4)")
+        # ====================================================================
+        # PRODUCTION MODE: Use OpenAI/GPT-4
+        # ====================================================================
+        if mode == "production":
+            if not openai_api_key:
+                logger.warning("⚠️  No OpenAI key - returning formatted context")
+                return context
+            
+            from openai import OpenAI
+            client = OpenAI(api_key=openai_api_key)
+            
+            logger.info(f"   ✅ OpenAI client initialized")
+            logger.info(f"   📤 Sending request to GPT-4 (model: gpt-4)")
         
         # Comprehensive system prompt for detailed explanations
         system_msg = """You are an expert software engineering tutor helping new developers understand a complex codebase.

@@ -18,8 +18,13 @@ async def parallel_entity_and_semantic_search(
     agent_urls: Dict[str, str]
 ) -> ToolResult:
     """
-    Execute Neo4j entity search + Pinecone semantic search IN PARALLEL.
-    ...
+    Execute Neo4j multi-entity search + Pinecone semantic search IN PARALLEL.
+    
+    Flow:
+    1. Task 1: Direct entity lookup (if valid entity name)
+    2. Task 1B: MULTI-ENTITY analysis (find top-5 relevant entities + all relationships)
+    3. Task 2: Exhaustive relationships for direct entity
+    4. Task 3: Pinecone semantic search
     """
     try:
         logger.info("🔄 PARALLEL_SEARCH: Starting parallel entity + semantic search...")
@@ -30,9 +35,9 @@ async def parallel_entity_and_semantic_search(
         has_valid_entity = entity_name and entity_name.lower() != "unknown"
         logger.info(f"   ✓ Valid entity: {has_valid_entity}")
         
-        # TASK 1: Neo4j entity search (skip if no valid entity)
+        # TASK 1: Neo4j direct entity search (skip if no valid entity)
         if has_valid_entity:
-            logger.info(f"   📍 Task 1: Neo4j entity search for '{entity_name}'")
+            logger.info(f"   📍 Task 1: Neo4j direct entity search for '{entity_name}'")
             neo4j_task = call_agent_tool(
                 agent="graph_query",
                 tool="find_entity",
@@ -41,31 +46,36 @@ async def parallel_entity_and_semantic_search(
                 agent_urls=agent_urls
             )
         else:
-            logger.info(f"   ⏭️  Task 1: Skipping Neo4j search (no valid entity)")
+            logger.info(f"   ⏭️  Task 1: Skipping direct Neo4j search (no valid entity)")
             async def failed_neo4j():
                 return ToolResult(success=False, error=f"No valid entity name provided")
             neo4j_task = failed_neo4j()
         
-        # TASK 1B: Neo4j best entity search (LLM-based disambiguation fallback)
-        # This will find the best matching entity if direct lookup fails
-        logger.info(f"   📍 Task 1B: Neo4j LLM-based entity disambiguation")
-        neo4j_best_entity_task = call_agent_tool(
+        # TASK 1B: Comprehensive entity analysis (LLM ranks top-5 + fetches relationships for each)
+        logger.info(f"   📍 Task 1B: Comprehensive entity analysis (top-5 entities + relationships)")
+        neo4j_all_entities_task = call_agent_tool(
             agent="graph_query",
-            tool="find_best_entity",
-            input_params={"query": query, "top_k": 50},
+            tool="comprehensive_entity_analysis",
+            input_params={"query": query, "top_k": 5},
             http_client=http_client,
             agent_urls=agent_urls
         )
         
-        # TASK 1C: Neo4j relationships search (EXHAUSTIVE - ALWAYS run)
-        logger.info(f"   📍 Task 1C: Neo4j EXHAUSTIVE relationships for '{entity_name}'")
-        neo4j_relationships_task = call_agent_tool(
-            agent="graph_query",
-            tool="find_entity_relationships",
-            input_params={"entity_name": entity_name},
-            http_client=http_client,
-            agent_urls=agent_urls
-        )
+        # TASK 1C: Neo4j exhaustive relationships for direct entity (ALWAYS run if entity valid)
+        if has_valid_entity:
+            logger.info(f"   📍 Task 1C: Neo4j exhaustive relationships for '{entity_name}'")
+            neo4j_relationships_task = call_agent_tool(
+                agent="graph_query",
+                tool="comprehensive_entity_analysis",  # ← CORRECT NAME (no _handler)
+                input_params={"query": query, "top_k": 5},
+                http_client=http_client,
+                agent_urls=agent_urls
+            )
+        else:
+            logger.info(f"   ⏭️  Task 1C: Skipping relationships search (no valid entity)")
+            async def failed_rel():
+                return ToolResult(success=False, error="No valid entity name provided")
+            neo4j_relationships_task = failed_rel()
         
         # TASK 2: Pinecone semantic search (always run)
         logger.info(f"   📍 Task 2: Pinecone semantic search")
@@ -87,29 +97,29 @@ async def parallel_entity_and_semantic_search(
             agent_urls=agent_urls
         )
         
-        # Execute all four in parallel
-        logger.info("   ⏳ Executing all tasks in parallel...")
+        # Execute all 4 tasks in parallel
+        logger.info("   ⏳ Executing all 4 tasks in parallel...")
         results = await asyncio.gather(
-            neo4j_task, 
-            neo4j_best_entity_task,
-            neo4j_relationships_task, 
-            pinecone_task, 
+            neo4j_task,
+            neo4j_all_entities_task,
+            neo4j_relationships_task,
+            pinecone_task,
             return_exceptions=True
         )
         
         neo4j_result = results[0] if len(results) > 0 else None
-        neo4j_best_entity_result = results[1] if len(results) > 1 else None
+        neo4j_all_entities_result = results[1] if len(results) > 1 else None
         neo4j_relationships_result = results[2] if len(results) > 2 else None
         pinecone_result = results[3] if len(results) > 3 else None
         
         # Handle exceptions
         if isinstance(neo4j_result, Exception):
-            logger.warning(f"   ⚠️  Neo4j search failed: {str(neo4j_result)}")
+            logger.warning(f"   ⚠️  Neo4j direct search failed: {str(neo4j_result)}")
             neo4j_result = ToolResult(success=False, error=str(neo4j_result))
         
-        if isinstance(neo4j_best_entity_result, Exception):
-            logger.warning(f"   ⚠️  Neo4j best entity search failed: {str(neo4j_best_entity_result)}")
-            neo4j_best_entity_result = ToolResult(success=False, error=str(neo4j_best_entity_result))
+        if isinstance(neo4j_all_entities_result, Exception):
+            logger.warning(f"   ⚠️  Neo4j multi-entity search failed: {str(neo4j_all_entities_result)}")
+            neo4j_all_entities_result = ToolResult(success=False, error=str(neo4j_all_entities_result))
         
         if isinstance(neo4j_relationships_result, Exception):
             logger.warning(f"   ⚠️  Neo4j relationships search failed: {str(neo4j_relationships_result)}")
@@ -120,57 +130,61 @@ async def parallel_entity_and_semantic_search(
             pinecone_result = ToolResult(success=False, error=str(pinecone_result))
         
         # Log results
-        logger.info(f"   ✅ Neo4j Entity: {'Success' if neo4j_result.success else 'Failed'}")
-        logger.info(f"   ✅ Neo4j Best Entity (LLM): {'Success' if neo4j_best_entity_result.success else 'Failed'}")
+        logger.info(f"   ✅ Neo4j Direct: {'Success' if neo4j_result.success else 'Failed'}")
+        logger.info(f"   ✅ Neo4j Multi-Entity: {'Success' if neo4j_all_entities_result.success else 'Failed'}")
         logger.info(f"   ✅ Neo4j Relationships: {'Success' if neo4j_relationships_result.success else 'Failed'}")
         logger.info(f"   ✅ Pinecone: {'Success' if pinecone_result.success else 'Failed'}")
         
         # Log detailed results
         if not neo4j_result.success:
-            logger.info(f"       Entity Error: {neo4j_result.error}")
-        if neo4j_best_entity_result.success:
-            best_match = neo4j_best_entity_result.data.get("best_match")
-            confidence = neo4j_best_entity_result.data.get("confidence", 0)
-            logger.info(f"       Best Match: {best_match} (confidence: {confidence})")
+            logger.info(f"       Direct Error: {neo4j_result.error}")
+        if neo4j_all_entities_result.success:
+            entities_count = neo4j_all_entities_result.data.get("relevant_count", 0)
+            total_relationships = neo4j_all_entities_result.data.get("total_relationships", 0)
+            logger.info(f"       Multi-Entity: Found {entities_count} relevant entities with {total_relationships} total relationships")
         if not neo4j_relationships_result.success:
             logger.info(f"       Relationships Error: {neo4j_relationships_result.error}")
         if pinecone_result.success:
             chunks_count = len(pinecone_result.data.get("chunks", []))
             logger.info(f"       Found: {chunks_count} code chunks")
-        # SCENARIO 1: Neo4j entity + relationships + Pinecone all succeeded
-        # SCENARIO 1: Try to use best entity match (LLM) if available
-        # Fallback: Use initial entity if best entity fails
-        if neo4j_best_entity_result.success and neo4j_best_entity_result.data:
-            logger.info("   ✅ SCENARIO 1: Using LLM-matched entity")
+        
+        # ============================================================================
+        # SCENARIO ROUTING: Choose best combination of results
+        # ============================================================================
+        
+        # SCENARIO 1: Multi-entity analysis succeeded AND found entities
+        if neo4j_all_entities_result.success and neo4j_all_entities_result.data:
+            all_entities_data = neo4j_all_entities_result.data
+            relevant_entities = all_entities_data.get("relevant_entities", [])
             
-            # Use best entity result
-            best_entity_data = neo4j_best_entity_result.data
-            best_entity_name = best_entity_data.get("best_match")
-            
-            # If we have relationships from the best entity, use them
-            dependents = best_entity_data.get("dependents", [])
-            dependencies = best_entity_data.get("dependencies", [])
-            parents = best_entity_data.get("parents", [])
-            
-            neo4j_entity = {
-                "source_type": "neo4j",
-                "entity_name": best_entity_name,
-                "entity_type": best_entity_data.get("entity_type", "Unknown"),
-                "module": best_entity_data.get("module", "N/A"),
-                "line_number": best_entity_data.get("line_number", 0),
-                "confidence": best_entity_data.get("confidence", 0),
-                "disambiguation_reason": best_entity_data.get("reason", ""),
-                "dependents": dependents,
-                "dependencies": dependencies,
-                "parents": parents,
-                "dependents_count": best_entity_data.get("dependents_count", 0),
-                "dependencies_count": best_entity_data.get("dependencies_count", 0),
-                "parents_count": best_entity_data.get("parents_count", 0)
-            }
-            
-            logger.info(f"   📍 Using LLM-matched entity: {best_entity_name}")
-            logger.info(f"       Confidence: {best_entity_data.get('confidence', 0)}")
-            logger.info(f"       Relationships: {best_entity_data.get('dependents_count', 0)} dependents")
+            # Check if we actually got entities back
+            if relevant_entities and len(relevant_entities) > 0:
+                logger.info("   ✅ SCENARIO 1: Using MULTI-ENTITY analysis (comprehensive)")
+                
+                # Format all entities with their relationships
+                formatted_entities = []
+                for entity in relevant_entities:
+                    formatted_entities.append({
+                        "source_type": "neo4j",
+                        "entity_name": entity.get("entity_name"),
+                        "entity_type": entity.get("entity_type"),
+                        "confidence": entity.get("confidence"),
+                        "reason": entity.get("reason"),
+                        "module": entity.get("module"),
+                        "line_number": entity.get("line_number"),
+                        "dependents": entity.get("dependents", []),
+                        "dependencies": entity.get("dependencies", []),
+                        "parents": entity.get("parents", []),
+                        "dependents_count": entity.get("dependents_count", 0),
+                        "dependencies_count": entity.get("dependencies_count", 0),
+                        "parents_count": entity.get("parents_count", 0)
+                    })
+                
+                logger.info(f"   📍 Formatted {len(formatted_entities)} relevant entities with relationships")
+            else:
+                # Initialize empty list if no entities found
+                formatted_entities = []
+                logger.info("   ⚠️  SCENARIO 1B: Multi-entity analysis returned empty results, falling through to Pinecone")
             
             # Format Pinecone chunks
             pinecone_chunks = pinecone_result.data.get("chunks", []) if pinecone_result.success else []
@@ -197,25 +211,84 @@ async def parallel_entity_and_semantic_search(
             return ToolResult(
                 success=True,
                 data={
-                    "neo4j_entity": neo4j_entity,
+                    "neo4j_entities": formatted_entities,  # PLURAL - multiple entities
                     "pinecone_chunks": formatted_chunks,
                     "pinecone_metadata": {
                         "total_chunks": len(formatted_chunks),
                         "reranked": pinecone_result.data.get("reranked", False) if pinecone_result.success else False,
                         "reranker_model": pinecone_result.data.get("reranker_model") if pinecone_result.success else None
                     },
-                    "scenario": "both_success_llm_matched",
+                    "scenario": "multi_entity_analysis",
                     "combined": True,
-                    "llm_disambiguation": True
+                    "multi_entity": True,
+                    "entities_count": len(formatted_entities),
+                    "total_relationships": sum(e.get("dependents_count", 0) + e.get("dependencies_count", 0) + e.get("parents_count", 0) for e in formatted_entities)
+                }
+            )
+
+
+        # SCENARIO 2: Direct entity + relationships succeeded
+        elif neo4j_result.success and neo4j_relationships_result.success:
+            logger.info("   ✅ SCENARIO 2: Direct entity + exhaustive relationships")
+            
+            neo4j_data = neo4j_result.data or {}
+            relationships_data = neo4j_relationships_result.data or {}
+            
+            neo4j_entity = {
+                "source_type": "neo4j",
+                "entity_name": neo4j_data.get("name", "Unknown"),
+                "entity_type": neo4j_data.get("type", "Unknown"),
+                "module": neo4j_data.get("properties", {}).get("module", "N/A"),
+                "line_number": neo4j_data.get("properties", {}).get("line_number", "N/A"),
+                "properties": neo4j_data.get("properties", {}),
+                "dependents": relationships_data.get("dependents", []),
+                "dependencies": relationships_data.get("dependencies", []),
+                "parents": relationships_data.get("parents", []),
+                "dependents_count": relationships_data.get("dependents_count", 0),
+                "dependencies_count": relationships_data.get("dependencies_count", 0),
+                "parents_count": relationships_data.get("parents_count", 0)
+            }
+            
+            pinecone_chunks = pinecone_result.data.get("chunks", []) if pinecone_result.success else []
+            formatted_chunks = []
+            for chunk in pinecone_chunks:
+                formatted_chunks.append({
+                    "source_type": "pinecone",
+                    "chunk_id": chunk.get("chunk_id", ""),
+                    "file_name": chunk.get("file_name", "unknown"),
+                    "file_path": chunk.get("file_path", "unknown"),
+                    "start_line": chunk.get("start_line", 0),
+                    "end_line": chunk.get("end_line", 0),
+                    "language": chunk.get("language", "python"),
+                    "content": chunk.get("content", ""),
+                    "preview": chunk.get("preview", ""),
+                    "relevance_score": chunk.get("relevance_score", 0),
+                    "confidence": chunk.get("confidence", 0),
+                    "reranked": chunk.get("reranked", False),
+                    "lines": chunk.get("lines", "0-0")
+                })
+            
+            logger.info(f"   📍 Formatted {len(formatted_chunks)} Pinecone chunks for synthesis")
+            
+            return ToolResult(
+                success=True,
+                data={
+                    "neo4j_entity": neo4j_entity,  # SINGULAR
+                    "pinecone_chunks": formatted_chunks,
+                    "pinecone_metadata": {
+                        "total_chunks": len(formatted_chunks),
+                        "reranked": pinecone_result.data.get("reranked", False) if pinecone_result.success else False,
+                        "reranker_model": pinecone_result.data.get("reranker_model") if pinecone_result.success else None
+                    },
+                    "scenario": "direct_entity",
+                    "combined": True,
+                    "multi_entity": False
                 }
             )
         
-        # SCENARIO 2: Both direct Neo4j search and Pinecone succeeded
-        elif neo4j_result.success and pinecone_result.success:
-            logger.info("   ✅ SCENARIO 2: Direct entity match + Pinecone")
-            
-            # (keep existing logic from before)
-            neo4j_data = neo4j_result.data or {}
+        # SCENARIO 3: Only Pinecone succeeded
+        elif pinecone_result.success:
+            logger.info("   ⚠️  SCENARIO 3: Only Pinecone succeeded (using semantic search)")
             
             pinecone_chunks = pinecone_result.data.get("chunks", [])
             formatted_chunks = []
@@ -235,147 +308,26 @@ async def parallel_entity_and_semantic_search(
                     "reranked": chunk.get("reranked", False),
                     "lines": chunk.get("lines", "0-0")
                 })
-
-            neo4j_entity = {
-                "source_type": "neo4j",
-                "entity_name": neo4j_data.get("name", "Unknown"),
-                "entity_type": neo4j_data.get("type", "Unknown"),
-                "module": neo4j_data.get("properties", {}).get("module", "N/A"),
-                "line_number": neo4j_data.get("properties", {}).get("line_number", "N/A"),
-                "properties": neo4j_data.get("properties", {})
-            }
-
-            # Merge relationships if available
-            if neo4j_relationships_result.success and neo4j_relationships_result.data:
-                relationships_data = neo4j_relationships_result.data
-                neo4j_entity["dependents"] = relationships_data.get("dependents", [])
-                neo4j_entity["dependencies"] = relationships_data.get("dependencies", [])
-                neo4j_entity["parents"] = relationships_data.get("parents", [])
-                neo4j_entity["dependents_count"] = relationships_data.get("dependents_count", 0)
-                neo4j_entity["dependencies_count"] = relationships_data.get("dependencies_count", 0)
-                neo4j_entity["parents_count"] = relationships_data.get("parents_count", 0)
-                logger.info(f"   📊 Merged relationships: {neo4j_entity['dependents_count']} dependents")
-
-            logger.info(f"   📍 Formatted {len(formatted_chunks)} Pinecone chunks for synthesis")
-
+            
             return ToolResult(
                 success=True,
                 data={
-                    "neo4j_entity": neo4j_entity,
+                    "neo4j_entities": [],
                     "pinecone_chunks": formatted_chunks,
                     "pinecone_metadata": {
                         "total_chunks": len(formatted_chunks),
                         "reranked": pinecone_result.data.get("reranked", False),
                         "reranker_model": pinecone_result.data.get("reranker_model")
                     },
-                    "scenario": "both_success",
-                    "combined": True,
-                    "llm_disambiguation": False
-                }
-            )
-        
-        # SCENARIO 2: Neo4j succeeded (with or without Pinecone)
-        # ALWAYS include exhaustive relationships if Neo4j entity succeeded
-        elif neo4j_result.success:
-            logger.info("   ⚠️  SCENARIO 2: Neo4j entity succeeded (Pinecone failed)")
-            
-            neo4j_data = neo4j_result.data or {}
-            relationships_data = neo4j_relationships_result.data or {} if neo4j_relationships_result.success else {}
-            
-            # Build entity with relationships
-            neo4j_entity = {
-                "source_type": "neo4j",
-                "entity_name": neo4j_data.get("name", "Unknown"),
-                "entity_type": neo4j_data.get("type", "Unknown"),
-                "module": neo4j_data.get("properties", {}).get("module", "N/A"),
-                "line_number": neo4j_data.get("properties", {}).get("line_number", "N/A"),
-                "properties": neo4j_data.get("properties", {})
-            }
-            
-            # Merge relationships if available
-            if neo4j_relationships_result.success and relationships_data:
-                neo4j_entity["dependents"] = relationships_data.get("dependents", [])
-                neo4j_entity["dependencies"] = relationships_data.get("dependencies", [])
-                neo4j_entity["parents"] = relationships_data.get("parents", [])
-                neo4j_entity["dependents_count"] = relationships_data.get("dependents_count", 0)
-                neo4j_entity["dependencies_count"] = relationships_data.get("dependencies_count", 0)
-                neo4j_entity["parents_count"] = relationships_data.get("parents_count", 0)
-                logger.info(f"   ✅ Added exhaustive relationships to entity")
-            else:
-                neo4j_entity["dependents"] = []
-                neo4j_entity["dependencies"] = []
-                neo4j_entity["parents"] = []
-                neo4j_entity["dependents_count"] = 0
-                neo4j_entity["dependencies_count"] = 0
-                neo4j_entity["parents_count"] = 0
-            
-            return ToolResult(
-                success=True,
-                data={
-                    "neo4j_entity": neo4j_entity,
-                    "pinecone_chunks": [],
-                    "scenario": "neo4j_only",
-                    "combined": False,
-                    "relationships_exhaustive": neo4j_relationships_result.success
-                }
-            )
-        
-        # SCENARIO 3: Only Pinecone succeeded (Neo4j entity failed, but try relationships anyway)
-        elif pinecone_result.success:
-            logger.info("   ⚠️  SCENARIO 3: Pinecone succeeded (Neo4j entity failed)")
-            
-            # Format Pinecone chunks
-            pinecone_chunks = pinecone_result.data.get("chunks", [])
-            formatted_chunks = []
-            for chunk in pinecone_chunks:
-                formatted_chunks.append({
-                    "source_type": "pinecone",
-                    "chunk_id": chunk.get("chunk_id", ""),
-                    "file_name": chunk.get("file_name", "unknown"),
-                    "file_path": chunk.get("file_path", "unknown"),
-                    "start_line": chunk.get("start_line", 0),
-                    "end_line": chunk.get("end_line", 0),
-                    "language": chunk.get("language", "python"),
-                    "content": chunk.get("content", ""),
-                    "preview": chunk.get("preview", ""),
-                    "relevance_score": chunk.get("relevance_score", 0),
-                    "confidence": chunk.get("confidence", 0),
-                    "reranked": chunk.get("reranked", False),
-                    "lines": chunk.get("lines", "0-0")
-                })
-            
-            # Try to add relationships even if entity lookup failed
-            relationships_data = neo4j_relationships_result.data or {} if neo4j_relationships_result.success else {}
-            relationships_only = {}
-            
-            if neo4j_relationships_result.success and relationships_data:
-                relationships_only = {
-                    "source_type": "neo4j",
-                    "entity_name": relationships_data.get("entity_name", "Unknown"),
-                    "entity_type": relationships_data.get("target_type", "Unknown"),
-                    "dependents": relationships_data.get("dependents", []),
-                    "dependencies": relationships_data.get("dependencies", []),
-                    "parents": relationships_data.get("parents", []),
-                    "dependents_count": relationships_data.get("dependents_count", 0),
-                    "dependencies_count": relationships_data.get("dependencies_count", 0),
-                    "parents_count": relationships_data.get("parents_count", 0)
-                }
-                logger.info(f"   ✅ Retrieved relationships despite entity lookup failure")
-            
-            return ToolResult(
-                success=True,
-                data={
-                    "neo4j_entity": relationships_only if relationships_only else None,
-                    "pinecone_chunks": formatted_chunks,
                     "scenario": "pinecone_only",
                     "combined": False,
-                    "relationships_exhaustive": neo4j_relationships_result.success
+                    "multi_entity": False
                 }
             )
         
-        # SCENARIO 4: Both failed - fetch memory context from last 3 chats
+        # SCENARIO 4: All searches failed - fetch memory fallback
         else:
-            logger.info("   ❌ SCENARIO 4: Both searches failed - fetching memory context")
+            logger.info("   ❌ SCENARIO 4: All searches failed - fetching memory context")
             return await _fetch_memory_fallback(postgres_client)
         
     except Exception as e:
@@ -388,21 +340,11 @@ async def parallel_entity_and_semantic_search(
 async def _fetch_memory_fallback(postgres_client: Any) -> ToolResult:
     """
     Fetch last 3 chat turns from memory as fallback.
-    
-    Args:
-        postgres_client: PostgreSQL client
-        
-    Returns:
-        ToolResult with memory context (success=True even if no history found)
     """
     try:
         logger.info("   💾 Fetching memory context from last 3 chats...")
         
-        # Query memory WITHOUT session_id to get global recent history
-        # This gets the most recent turns across all sessions
         try:
-            # Try to get conversation history without session_id filter
-            # by querying the database directly for recent turns
             history = await postgres_client.execute_query(
                 """
                 SELECT id, session_id, turn_number, role, content, created_at
@@ -419,20 +361,18 @@ async def _fetch_memory_fallback(postgres_client: Any) -> ToolResult:
                 history = []
                 
         except Exception as query_err:
-            logger.warning(f"   ⚠️  Direct query failed, trying fallback: {query_err}")
-            # Fallback: try to get stats or empty list
+            logger.warning(f"   ⚠️  Direct query failed: {query_err}")
             history = []
         
-        # IMPORTANT: Return success=True even if no history
-        # This allows synthesis to work with memory_fallback scenario
         return ToolResult(
             success=True,
             data={
-                "neo4j": None,
-                "pinecone": None,
+                "neo4j_entities": [],
+                "pinecone_chunks": [],
                 "memory_context": history,
                 "scenario": "memory_fallback",
                 "combined": False,
+                "multi_entity": False,
                 "message": "No search results, using conversation memory as context" if history else "No search results and no memory context available"
             }
         )
@@ -442,16 +382,15 @@ async def _fetch_memory_fallback(postgres_client: Any) -> ToolResult:
         import traceback
         logger.error(traceback.format_exc())
         
-        # Return success=True with empty context rather than failing
-        # This ensures the pipeline doesn't break
         return ToolResult(
             success=True,
             data={
-                "neo4j": None,
-                "pinecone": None,
+                "neo4j_entities": [],
+                "pinecone_chunks": [],
                 "memory_context": [],
                 "scenario": "memory_fallback",
                 "combined": False,
+                "multi_entity": False,
                 "message": "No search results and memory context unavailable"
             }
         )

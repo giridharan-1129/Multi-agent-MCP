@@ -111,13 +111,11 @@ def get_indexed_repos():
         
         with driver.session() as session:
             cypher = """
-            MATCH (f:File)
-            WHERE f.repo_url IS NOT NULL
-            WITH f.repo_url as repo_url, COUNT(f) as file_count
-            MATCH (n) WHERE n.repo_url = repo_url
-            RETURN DISTINCT repo_url, COUNT(n) as node_count
-            ORDER BY repo_url
-            """
+MATCH (f:File)
+WITH COUNT(f) as file_count
+MATCH (n) 
+RETURN "all_repos" as repo_url, COUNT(n) as node_count
+"""
             
             result = session.run(cypher)
             repos = []
@@ -736,10 +734,10 @@ with message_container:
                     if pinecone_sources:
                         st.write("**📝 Code Chunks (Semantic Search)**")
                         for j, source in enumerate(pinecone_sources, 1):
-                            # Use DIFFERENT keys for button and state
-                            msg_idx = len(st.session_state.messages)
-                            button_key = f"history_btn_msg{msg_idx}_{j}"     # ← Button key (read-only)
-                            state_key = f"history_state_msg{msg_idx}_{j}"   # ← State key (writable)
+                            # Use DIFFERENT keys for button and state with session_id
+                            session_key = str(st.session_state.session_id) if st.session_state.session_id else "new"
+                            button_key = f"history_pinecone_btn_{session_key}_{id(source)}_{j}"     # ← Unique button key
+                            state_key = f"history_pinecone_state_{session_key}_{id(source)}_{j}"   # ← Unique state key
                             
                             # Initialize state BEFORE creating widget
                             if state_key not in st.session_state:
@@ -765,7 +763,7 @@ with message_container:
                             if st.session_state.get(state_key):
                                 st.code(source.get('content', 'No content'), language=source.get('language', 'python'))
                                     
-                    if neo4j_sources:  # ← CORRECT: Now at proper indentation level
+                    if neo4j_sources:  # ← CORRECT: neo4j_sources exists
                         st.write("**🔗 Neo4j Knowledge Graph**")
                         
                         # Separate entity and relationship sources
@@ -773,7 +771,7 @@ with message_container:
                         rel_sources = [s for s in neo4j_sources if s.get("type") == "relationships"]
                         
                         # Display entities
-                        if entity_sources:
+                        if entity_sources:  # ← NOW INSIDE the if neo4j_sources block
                             st.markdown("##### 📋 **Entities**")
                             for k, source in enumerate(entity_sources, 1):
                                 with st.container(border=True):
@@ -784,7 +782,7 @@ with message_container:
                                     """)
                         
                         # Display relationships
-                        if rel_sources:
+                        if rel_sources:  # ← NOW INSIDE the if neo4j_sources block
                             st.markdown("##### 🔗 **Dependent Entities (Things that depend on this)**")
                             for k, rel_source in enumerate(rel_sources, 1):
                                 entity_name = rel_source.get("entity_name", "Unknown")
@@ -817,6 +815,48 @@ with message_container:
                                             st.caption(f"... and {len(dependents) - 10} more")
                                     else:
                                         st.info("ℹ️ No dependents found")
+                    
+                    # ====================================================================
+                    # CODE ANALYST SOURCES (Implementation explanations)
+                    # ====================================================================
+                    code_analyst_sources = [s for s in retrieved_sources if s.get("source_type") == "code_analyst"]
+                    
+                    if code_analyst_sources:
+                        st.markdown("#### 💡 **Code Analyst - Implementation Explanation**")
+                        
+                        for k, source in enumerate(code_analyst_sources, 1):
+                            with st.container(border=True):
+                                entity_name = source.get("entity_name", "Unknown")
+                                entity_type = source.get("entity_type", "Unknown")
+                                module = source.get("module", "N/A")
+                                line_num = source.get("line_number", "N/A")
+                                calls_count = source.get("calls_count", 0)
+                                called_by_count = source.get("called_by_count", 0)
+                                explanation = source.get("explanation", "")
+                                
+                                st.markdown(f"""
+**{entity_name}** (`{entity_type}`)
+- **Location:** `{module}:{line_num}`
+- **Calls:** {calls_count} | **Called by:** {called_by_count}
+                                """)
+                                
+                                # Toggle to show/hide explanation
+                                session_key = str(st.session_state.session_id) if st.session_state.session_id else "new"
+                                button_key = f"analyst_btn_{session_key}_{k}"
+                                state_key = f"analyst_state_{session_key}_{k}"
+                                
+                                if state_key not in st.session_state:
+                                    st.session_state[state_key] = False
+                                
+                                col_title, col_btn = st.columns([0.9, 0.1])
+                                
+                                with col_btn:
+                                    if st.button("📖", key=button_key, help="View explanation"):
+                                        st.session_state[state_key] = not st.session_state[state_key]
+                                
+                                if st.session_state.get(state_key, False):
+                                    st.markdown("---")
+                                    st.markdown(explanation)
                                                             
                     if tools_used:
                         st.write("**🔧 Tools Used:**")

@@ -447,8 +447,8 @@ def _select_tool_for_agent(
         # For analyze intent, get both entity info AND relationships
         if intent == "analyze":
             return (
-                "find_entity_relationships",
-                {"entity_name": entity_name}
+                "comprehensive_entity_analysis",  # ← CORRECT NAME (no _handler)
+                {"query": query, "top_k": 5}
             )
         return (
             "find_entity",

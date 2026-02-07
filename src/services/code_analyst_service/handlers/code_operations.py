@@ -93,21 +93,31 @@ async def compare_implementations_handler(
         logger.error(f"Failed to compare implementations: {e}")
         return ToolResult(success=False, error=str(e))
 
-
 async def explain_implementation_handler(
     neo4j_service: Neo4jService,
     entity_name: str
 ) -> ToolResult:
-    """Generate explanation of code implementation."""
+    """Generate explanation of code implementation with full details."""
     try:
+        # Query to get entity details with relationships
         query = """
-        MATCH (e {name: $name})
-        OPTIONAL MATCH (e)-[:CALLS]->(called)
-        OPTIONAL MATCH (e)-[r]->(dep)
-        WHERE type(r) IN ['CALLS', 'INHERITS_FROM', 'CONTAINS', 'IMPORTS']
-        RETURN e.docstring as docstring, e.docstring as code,
-               collect(distinct called.name) as calls,
-               collect(distinct dep.name) as dependencies
+        MATCH (e) WHERE toLower(e.name) = toLower($name)
+        OPTIONAL MATCH (e)-[:CALLS]->(called:Function)
+        OPTIONAL MATCH (caller:Function)-[:CALLS]->(e)
+        OPTIONAL MATCH (e)-[:IMPORTS]->(imp)
+        OPTIONAL MATCH (e)-[:INHERITS_FROM]->(parent)
+        OPTIONAL MATCH (child)-[:INHERITS_FROM]->(e)
+        RETURN 
+            e.name as entity_name,
+            labels(e)[0] as entity_type,
+            e.docstring as docstring,
+            e.module as module,
+            e.line_number as line_number,
+            collect(distinct called.name) as calls,
+            collect(distinct caller.name) as called_by,
+            collect(distinct imp.name) as imports,
+            collect(distinct parent.name) as parent_class,
+            collect(distinct child.name) as child_classes
         """
         
         result = await neo4j_service.execute_query(query, {"name": entity_name})
@@ -115,20 +125,47 @@ async def explain_implementation_handler(
         if not result:
             return ToolResult(success=False, error=f"Entity not found: {entity_name}")
         
-        record = result[0]  # Dict with keys: {"docstring": ..., "code": ..., "calls": [...], "dependencies": [...]}
+        record = result[0]
+        # Now record is a dict with flattened keys, not nested entity_data
+        if not isinstance(record, dict) or not record.get("entity_name"):
+            return ToolResult(success=False, error=f"Entity not found: {entity_name}")
+        
+        data = record  # Use the record directly now
+        
+        # Build comprehensive explanation
+        entity_type = data.get("entity_type", "Unknown")
+        docstring = data.get("docstring", "No documentation")
+        module = data.get("module", "N/A")
+        line_num = data.get("line_number", "N/A")
+        calls = [c for c in data.get("calls", []) if c]
+        called_by = [c for c in data.get("called_by", []) if c]
+        imports = [i for i in data.get("imports", []) if i]
+        parents = [p for p in data.get("parent_class", []) if p]
+        children = [c for c in data.get("child_classes", []) if c]
         
         explanation = f"""
-# {entity_name}
+**{entity_name}** (`{entity_type}`)
+- **Location:** `{module}:{line_num}`
+- **Type:** {entity_type}
 
-## Documentation
-{record["docstring"] or "No documentation available"}
+**What it does:**
+{docstring}
 
-## Implementation
-{record["code"] or "No source code available"}
+**Calls (Functions/Methods it invokes):** {len(calls)} total
+{chr(10).join(f"  • {c}" for c in calls[:10]) if calls else "  • None"}
+{f"  ... and {len(calls) - 10} more" if len(calls) > 10 else ""}
 
-## Dependencies
-- Calls: {', '.join(record["calls"]) if record["calls"] else 'None'}
-- Depends on: {', '.join(record["dependencies"]) if record["dependencies"] else 'None'}
+**Called by (Who uses it):** {len(called_by)} components
+{chr(10).join(f"  • {c}" for c in called_by[:10]) if called_by else "  • None"}
+{f"  ... and {len(called_by) - 10} more" if len(called_by) > 10 else ""}
+
+**Imports:** {len(imports)} dependencies
+{chr(10).join(f"  • {i}" for i in imports[:5]) if imports else "  • None"}
+{f"  ... and {len(imports) - 5} more" if len(imports) > 5 else ""}
+
+**Inheritance:**
+{f"Inherits from: {', '.join(parents)}" if parents else "No parent class"}
+{f"Subclasses: {', '.join(children)}" if children else "No subclasses"}
         """
         
         logger.info(f"Implementation explained: {entity_name}")
@@ -136,8 +173,14 @@ async def explain_implementation_handler(
         return ToolResult(
             success=True,
             data={
-                "entity": entity_name,
-                "explanation": explanation.strip()
+                "entity_name": entity_name,
+                "entity_type": entity_type,
+                "module": module,
+                "line_number": line_num,
+                "explanation": explanation.strip(),
+                "calls_count": len(calls),
+                "called_by_count": len(called_by),
+                "imports_count": len(imports)
             }
         )
     except Exception as e:

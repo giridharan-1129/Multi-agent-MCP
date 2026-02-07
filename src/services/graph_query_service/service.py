@@ -7,8 +7,7 @@ from ...shared.mcp_server import BaseMCPServer, ToolResult
 from ...shared.neo4j_service import Neo4jService
 from ...shared.logger import get_logger
 from .handlers import (
-    find_entity_handler,
-    find_entity_relationships_handler,
+    comprehensive_entity_analysis_handler,
     get_dependencies_handler,
     get_dependents_handler,
     trace_imports_handler,
@@ -17,7 +16,6 @@ from .handlers import (
     semantic_search_handler,
     clear_index_handler,
     clear_embeddings_handler,
-    find_best_entity_handler
 )
 
 logger = get_logger(__name__)
@@ -38,17 +36,11 @@ class GraphQueryService(BaseMCPServer):
     # ============================================================================
     # WRAPPER METHODS (delegate to handlers) - DEFINED BEFORE register_tools()
     # ============================================================================
-    
-    async def _find_entity_wrapper(self, name: str, entity_type: str = None) -> ToolResult:
-        """Wrapper for find_entity handler."""
-        return await find_entity_handler(self.neo4j_service, name, entity_type)
-    async def _find_best_entity_wrapper(self, query: str, top_k: int = 50) -> ToolResult:
-        """Wrapper for find_best_entity handler - LLM-based entity disambiguation."""
-        return await find_best_entity_handler(self.neo4j_service, query, top_k)
-    async def _find_entity_relationships_wrapper(self, entity_name: str) -> ToolResult:
-        """Wrapper for find_entity_relationships handler - EXHAUSTIVE relationships."""
-        return await find_entity_relationships_handler(self.neo4j_service, entity_name)
-    
+
+    async def _comprehensive_entity_analysis_wrapper(self, query: str, top_k: int = 5) -> ToolResult:
+        """Wrapper for comprehensive entity analysis - All nodes + LLM ranking + relationships."""
+        return await comprehensive_entity_analysis_handler(self.neo4j_service, query, top_k)
+
     async def _get_dependencies_wrapper(self, name: str) -> ToolResult:
         """Wrapper for get_dependencies handler."""
         return await get_dependencies_handler(self.neo4j_service, name)
@@ -120,28 +112,6 @@ class GraphQueryService(BaseMCPServer):
 
     async def register_tools(self):
         """Register graph query tools."""
-        
-        # Tool 1: Find Entity
-        self.register_tool(
-            name="find_entity",
-            description="Find a class, function, or module by name",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Entity name to search for"
-                    },
-                    "entity_type": {
-                        "type": "string",
-                        "enum": ["Class", "Function", "Module"],
-                        "description": "Optional filter by entity type"
-                    }
-                },
-                "required": ["name"]
-            },
-            handler=self._find_entity_wrapper
-        )
         
         # Tool 2: Get Dependencies
         self.register_tool(
@@ -219,26 +189,6 @@ class GraphQueryService(BaseMCPServer):
             },
             handler=self._find_related_wrapper
         )
-        # Tool 8: Find Best Entity (LLM-based disambiguation)
-        self.register_tool(
-            name="find_best_entity",
-            description="Find the best matching entity using LLM to disambiguate between similar entity names",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "User query to find best matching entity for"
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "Number of entities to consider (default: 50)"
-                    }
-                },
-                "required": ["query"]
-            },
-            handler=self._find_best_entity_wrapper
-        )
         # Tool 6: Execute Custom Query
         self.register_tool(
             name="execute_query",
@@ -285,22 +235,6 @@ class GraphQueryService(BaseMCPServer):
             handler=self._semantic_search_wrapper
         )
         
-        # Tool 8: Find Entity Relationships (EXHAUSTIVE)
-        self.register_tool(
-            name="find_entity_relationships",
-            description="Find exhaustive relationships for an entity (dependents, dependencies, parents)",
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "entity_name": {
-                        "type": "string",
-                        "description": "Entity name to analyze for relationships"
-                    }
-                },
-                "required": ["entity_name"]
-            },
-            handler=self._find_entity_relationships_wrapper
-        )
         
         # Tool 9: Clear Neo4j Index
         self.register_tool(
@@ -330,6 +264,28 @@ class GraphQueryService(BaseMCPServer):
             },
             handler=self._clear_embeddings_wrapper
         )  
+
+        # Tool 1: Comprehensive Entity Analysis (ALL nodes + LLM ranking + relationships)
+        self.register_tool(
+            name="comprehensive_entity_analysis",
+            description="Find all relevant entities and their relationships - comprehensive codebase analysis",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "User query to analyze codebase for"
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of top entities to return (default: 5)"
+                    }
+                },
+                "required": ["query"]
+            },
+            handler=self._comprehensive_entity_analysis_wrapper
+        )
+
         self.logger.info("Registered 10 graph query tools")
   
     async def _setup_service(self):

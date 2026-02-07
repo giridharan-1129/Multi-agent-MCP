@@ -247,13 +247,17 @@ async def semantic_search_handler(
             try:
                 logger.info(f"🔄 Step 2: Reranking with Cohere...")
                 
-                # Prepare documents for reranking
+                # Prepare documents for reranking with better formatting
                 documents = []
                 for chunk in chunks:
+                    # Create comprehensive document for better reranking
                     doc = f"File: {chunk['file_path']}\n"
                     doc += f"Lines {chunk['start_line']}-{chunk['end_line']}\n"
                     doc += f"Language: {chunk['language']}\n"
-                    doc += f"Content: {chunk['preview']}"
+                    # Include full content, not just preview, for better scoring
+                    content = chunk.get("content") or chunk.get("preview", "")
+                    if content:
+                        doc += f"\nCode:\n{content[:1000]}"  # Include up to 1000 chars of actual code
                     documents.append(doc)
                 
                 # Call Cohere rerank
@@ -282,10 +286,13 @@ async def semantic_search_handler(
                         if idx in reranked_map:
                             cohere_score = reranked_map[idx]
                             original_score = chunk["original_score"]
-                            # Average the two scores
-                            chunk["relevance_score"] = cohere_score  # Primary: Cohere score
-                            chunk["confidence"] = round((original_score + cohere_score) / 2, 3)
+                            # Weight: 70% Cohere (better semantic understanding) + 30% Pinecone (initial relevance)
+                            weighted_score = round((cohere_score * 0.7) + (original_score * 0.3), 3)
+                            chunk["relevance_score"] = weighted_score  # Primary: Weighted score
+                            chunk["confidence"] = weighted_score
                             chunk["reranked"] = True
+                            logger.info(f"   📊 Reranked: {chunk['file_name']} "
+                                f"(Pinecone: {original_score:.1%}, Cohere: {cohere_score:.1%}, Final: {weighted_score:.1%})")
                             logger.debug(
                                 f"📊 Reranked: {chunk['file_name']} "
                                 f"(Pinecone: {original_score}, Cohere: {cohere_score}, Confidence: {chunk['confidence']})"
