@@ -93,19 +93,32 @@ class ASTParser:
 
             entities = []
 
-            # --- MODULE DOCSTRING (NEW) ---
+            # --- MODULE NODE ---
+            module_name = self._extract_module_name(file_path)
+            if module_name:
+                entities.append({
+                    "type": "Module",
+                    "name": module_name,
+                    "module": self.current_file,
+                    "file_path": file_path,
+                    "package": self.current_package,
+                })
+                entities.append({
+                    "type": "File",
+                    "name": file_path,
+                    "package": self.current_package,
+                })
+            # --- MODULE DOCSTRING ---
             module_docstring = ast.get_docstring(tree)
             if module_docstring:
-                entities.append(
-                    {
-                        "type": "Docstring",
-                        "name": f"{self.current_file}::docstring",
-                        "scope": "module",
-                        "content": module_docstring,
-                        "module": self.current_file,
-                        "package": self.current_package,
-                    }
-                )
+                entities.append({
+                    "type": "Docstring",
+                    "name": f"{self.current_file}::docstring",
+                    "scope": "module",
+                    "content": module_docstring,
+                    "module": self.current_file,
+                    "package": self.current_package,
+                })
 
 
             # --- EXISTING ENTITY EXTRACTION ---
@@ -155,10 +168,14 @@ class ASTParser:
 
         for node in tree.body:
             if isinstance(node, ast.ImportFrom):
-                self._handle_import_from(node)
+                # Extract import entities
+                import_entities = self._handle_import_from(node)
+                entities.extend(import_entities)
 
             elif isinstance(node, ast.Import):
-                self._handle_import(node)
+                # Extract import entities
+                import_entities = self._handle_import(node)
+                entities.extend(import_entities)
                 
             elif isinstance(node, ast.Assign):
                 self._handle_assignment(node)
@@ -175,9 +192,31 @@ class ASTParser:
 
                 entities.extend(function_entities)
 
-
         return entities
-
+    def _extract_module_name(self, file_path: str) -> str:
+        """
+        Extract module name from file path.
+        e.g., /path/to/fastapi/main.py -> fastapi.main
+        """
+        parts = file_path.replace("\\", "/").split("/")
+        
+        # Find the root package
+        if "fastapi" not in parts:
+            return ""
+        
+        idx = len(parts) - 1 - parts[::-1].index("fastapi")
+        
+        # Remove .py extension
+        module_parts = parts[idx:-1]
+        filename = parts[-1].replace(".py", "")
+        
+        if filename != "__init__":
+            module_parts.append(filename)
+        
+        if not module_parts:
+            return ""
+        
+        return ".".join(module_parts)
     def _handle_class_with_context(self, node: ast.ClassDef) -> List[Dict[str, Any]]:
         entities = []
 
@@ -204,16 +243,50 @@ class ASTParser:
         return entities
 
 
-    def _handle_import(self, node: ast.Import) -> None:
-        """Handle import statement."""
+    def _handle_import(self, node: ast.Import) -> List[Dict[str, Any]]:
+        """Handle import statement - extract Import entities."""
+        entities = []
+        
         for alias in node.names:
             module_name = alias.name
+            import_name = alias.asname or alias.name
             self.current_module_imports.add(module_name)
+            
+            # Create Import entity
+            entities.append({
+                "type": "Import",
+                "name": import_name,
+                "module_name": module_name,
+                "module": self.current_file,
+                "line_number": node.lineno,
+                "package": self.current_package,
+            })
+        
+        return entities
 
-    def _handle_import_from(self, node: ast.ImportFrom) -> None:
-        """Handle from...import statement."""
+    def _handle_import_from(self, node: ast.ImportFrom) -> List[Dict[str, Any]]:
+        """Handle from...import statement - extract Import entities."""
+        entities = []
+        
         if node.module:
             self.current_module_imports.add(node.module)
+        
+        # Create Import entities for each imported name
+        for alias in node.names:
+            import_name = alias.asname or alias.name
+            module_name = node.module or "__main__"
+            
+            entities.append({
+                "type": "Import",
+                "name": import_name,
+                "module_name": module_name,
+                "from_module": node.module,
+                "module": self.current_file,
+                "line_number": node.lineno,
+                "package": self.current_package,
+            })
+        
+        return entities
 
     def _handle_class(self, node: ast.ClassDef) -> List[Dict[str, Any]]:
         entities = []
@@ -240,6 +313,17 @@ class ASTParser:
             "package": self.current_package,
             "decorators": self._get_decorators(node),
         }
+
+        # Extract decorators as entities
+        for decorator_str in class_entity.get("decorators", []):
+            entities.append({
+                "type": "Decorator",
+                "name": decorator_str,
+                "module": self.current_file,
+                "line_number": node.lineno,
+                "package": self.current_package,
+                "decorates": node.name,  # What it decorates
+            })
 
         entities.append(class_entity)
         return entities
@@ -277,6 +361,7 @@ class ASTParser:
                 "package": self.current_package,
             })
 
+
         entity_type = "Method" if self.class_stack else "Function"
 
         function_entity = {
@@ -302,6 +387,17 @@ class ASTParser:
                 "function": node.name,
                 "module": self.current_file,
                 "package": self.current_package,
+            })
+
+                # Extract decorators as entities
+        for decorator_str in function_entity.get("decorators", []):
+            entities.append({
+                "type": "Decorator",
+                "name": decorator_str,
+                "module": self.current_file,
+                "line_number": node.lineno,
+                "package": self.current_package,
+                "decorates": node.name,  # What it decorates
             })
 
         if returns:

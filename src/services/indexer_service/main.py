@@ -24,11 +24,12 @@ from .handlers.index_repository import index_repository_handler
 from .handlers.embeddings import (
     embed_repository_handler,
     semantic_search_handler,
-    get_embeddings_stats_handler
+    get_embeddings_stats_handler,
 )
 from .handlers.status import (
     get_index_status_handler,
-    clear_index_handler
+    clear_index_handler,
+    clear_embeddings_handler
 )
 
 logger = get_logger(__name__)
@@ -143,6 +144,21 @@ class IndexerService(BaseMCPServer):
                 "schema": {"type": "object", "properties": {}, "required": []},
                 "handler": lambda **kw: clear_index_handler(
                     neo4j_service=self.neo4j_service
+                )
+            },
+            {
+                "name": "clear_embeddings",
+                "description": "Clear all embeddings from Pinecone",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "repo_id": {"type": "string", "description": "Repository ID to clear (default: all)"}
+                    },
+                    "required": []
+                },
+                "handler": lambda **kw: clear_embeddings_handler(
+                    pinecone_service=self.pinecone_service,
+                    repo_id=kw.get("repo_id", "all")
                 )
             },
         ]

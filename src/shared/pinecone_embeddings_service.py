@@ -602,7 +602,56 @@ class PineconeEmbeddingsService:
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
             return {}
-    
+    async def delete_vectors(self, repo_id: str = "all") -> int:
+        """
+        Delete vectors from Pinecone.
+        
+        Args:
+            repo_id: Repository ID to delete ("all" = delete everything)
+        
+        Returns:
+            Number of vectors deleted
+        """
+        try:
+            if not self.index:
+                logger.warning("Pinecone index not available")
+                return 0
+            
+            if repo_id == "all":
+                # Delete all vectors
+                logger.info("🗑️ Deleting ALL vectors from Pinecone...")
+                try:
+                    self.index.delete(delete_all=True)
+                    logger.info("✅ All vectors deleted successfully")
+                except Exception as delete_err:
+                    # If delete fails (e.g., 404 - namespace not found), that's OK
+                    if "404" in str(delete_err) or "not found" in str(delete_err).lower():
+                        logger.info("ℹ️ No vectors found to delete (index already empty)")
+                    else:
+                        logger.warning(f"⚠️ Delete encountered error (but continuing): {delete_err}")
+                return 0  # Can't count when deleting all
+            else:
+                # Delete vectors for specific repo
+                logger.info(f"🗑️ Deleting vectors for repo: {repo_id}")
+                try:
+                    # Filter by repo_id metadata
+                    self.index.delete(
+                        filter={"repo_id": {"$eq": repo_id}}
+                    )
+                    logger.info(f"✅ Vectors deleted for {repo_id}")
+                except Exception as delete_err:
+                    # If delete fails (e.g., 404 - namespace not found), that's OK
+                    if "404" in str(delete_err) or "not found" in str(delete_err).lower():
+                        logger.info(f"ℹ️ No vectors found for {repo_id} (already empty)")
+                    else:
+                        logger.warning(f"⚠️ Delete for {repo_id} encountered error: {delete_err}")
+                return 0
+                    
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during delete: {e}")
+            # Don't re-raise - return gracefully
+            return 0
+
     async def delete_repository(self, repo_id: str) -> bool:
         """
         Delete all embeddings for a repository.

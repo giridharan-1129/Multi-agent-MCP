@@ -24,22 +24,20 @@ async def route_to_agents(
     """
     try:
         # Intent-to-agents mapping
-        # Intent-to-agents mapping
         ROUTING_MAP = {
             # ===== GRAPH QUERY AGENT (Parallel Neo4j + Pinecone) =====
             "search": ["graph_query"],        # Find entities quickly
             
             # ===== CODE ANALYST AGENT (Deep code understanding) =====
             "explain": ["graph_query", "code_analyst"],      # Entity info + deep explanation
-            "analyze": ["code_analyst"],                       # Detailed code analysis
+            "analyze": ["code_analyst","graph_query",],                       # Detailed code analysis
             "compare": ["code_analyst"],                       # Side-by-side comparison
             "pattern": ["code_analyst"],                       # Design pattern detection
-            
+            "admin": ["graph_query"], 
             # ===== INDEXER AGENT (Repository management) =====
             "index": ["indexer"],              # Full repo indexing
             "embed": ["indexer"],              # Semantic indexing to Pinecone
-            "stats": ["indexer"],              # Repository statistics
-            
+            "stats": ["indexer"],              # Repository statistics            
             # ===== FALLBACK =====
             "default": ["graph_query"]         # Default to search
         }
@@ -49,7 +47,14 @@ async def route_to_agents(
         logger.info(f"🛣️  ROUTING: intent='{intent}' → agents={agents}")
         logger.info(f"   Reason: {intent} intent routed to {agents}")
         logger.debug(f"🛣️  Routing: intent={intent} → agents={agents}, parallel={parallel}")
-        
+        # Special handling for admin/maintenance queries
+        if any(keyword in query.lower() for keyword in ["clear", "delete", "wipe", "reset"]):
+            if any(keyword in query.lower() for keyword in ["index", "data", "database", "neo4j", "embed", "pinecone"]):
+                agents = ["graph_query"]  # ← CHANGE from indexer to graph_query
+                parallel = False
+                intent = "admin"  # ← ADD THIS to update intent
+                logger.info(f"🛣️  ROUTING: Admin query detected → agents={agents}")
+                logger.info(f"   Reason: Clear/Delete query routed to graph_query")
         return ToolResult(
             success=True,
             data={

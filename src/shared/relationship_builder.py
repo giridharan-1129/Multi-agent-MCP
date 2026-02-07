@@ -34,6 +34,28 @@ class RelationshipBuilder:
         """Initialize relationship builder."""
         logger.debug("RelationshipBuilder initialized")
 
+    def _extract_module_from_file(self, file_path: str) -> Optional[str]:
+        """Extract module name from file path."""
+        if not file_path:
+            return None
+        
+        parts = file_path.replace("\\", "/").split("/")
+        
+        if "fastapi" not in parts:
+            return None
+        
+        try:
+            idx = len(parts) - 1 - parts[::-1].index("fastapi")
+            module_parts = parts[idx:-1]
+            filename = parts[-1].replace(".py", "")
+            
+            if filename != "__init__":
+                module_parts.append(filename)
+            
+            return ".".join(module_parts) if module_parts else None
+        except Exception:
+            return None    
+
     def build_relationships(
         self,
         entities: List[Dict[str, Any]],
@@ -71,14 +93,31 @@ class RelationshipBuilder:
         relationships.extend(self._build_docstring_relationships(entities))
         relationships.extend(self._build_method_relationships(entities))
         relationships.extend(self._build_parameter_relationships(entities))
+        relationships.extend(self._build_decorated_relationships(entities))
+        relationships.extend(self._build_depends_on_relationships(entities))
+
         logger.info(
             "Relationships built",
             total=len(relationships),
             inheritance=len([r for r in relationships if r["type"] == "INHERITS_FROM"]),
             imports=len([r for r in relationships if r["type"] == "IMPORTS"]),
         )
-        # Build class → function CONTAINS relationships
+        # Build CONTAINS relationships: Module→Class and Class→Function
         for entity in entities:
+            # Module CONTAINS Class
+            if entity["type"] == "Class":
+                module_name = self._extract_module_from_file(entity.get("module"))
+                if module_name:
+                    relationships.append({
+                        "source": module_name,
+                        "source_module": entity.get("module"),
+                        "target": entity["name"],
+                        "target_module": entity.get("module"),
+                        "type": "CONTAINS",
+                        "line_number": entity.get("line_number"),
+                    })
+            
+            # Class CONTAINS Function/Method
             if entity["type"] == "Function" and entity.get("parent_class"):
                 relationships.append({
                     "source": entity["parent_class"],
@@ -173,11 +212,52 @@ class RelationshipBuilder:
                 relationships.append({
                     "source": e["function"],
                     "target": e["name"],
-                    "type": "HAS_PARAM",
+                    "type": "HAS_PARAMETER",  # ✅ CORRECT NAME
                 })
 
         return relationships
 
+    def _build_decorated_relationships(self, entities):
+        """Build DECORATED_BY relationships between functions/classes and decorators."""
+        relationships = []
+
+        for entity in entities:
+            if entity["type"] in {"Function", "Method", "Class"}:
+                decorators = entity.get("decorators", [])
+                
+                if decorators:
+                    for decorator in decorators:
+                        relationships.append({
+                            "source": entity["name"],
+                            "source_module": entity.get("module"),
+                            "target": decorator,
+                            "target_module": entity.get("module"),
+                            "type": "DECORATED_BY",
+                            "line_number": entity.get("line_number"),
+                        })
+
+        return relationships
+
+    def _build_depends_on_relationships(self, entities):
+        """Build DEPENDS_ON relationships between classes that have dependencies."""
+        relationships = []
+
+        for entity in entities:
+            if entity["type"] == "Class" and entity.get("bases"):
+                    # Class depends on its base classes
+                    for base in entity["bases"]:
+                        class_name = base.split(".")[-1] if "." in base else base
+                        
+                        relationships.append({
+                            "source": entity["name"],
+                            "source_module": entity.get("module"),
+                            "target": class_name,
+                            "target_module": entity.get("module"),
+                            "type": "DEPENDS_ON",
+                            "line_number": entity.get("line_number"),
+                        })
+
+        return relationships
 
     def _build_call_relationships_from_entities(self, entities):
         relationships = []

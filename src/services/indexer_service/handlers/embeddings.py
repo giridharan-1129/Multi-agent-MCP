@@ -35,14 +35,15 @@ async def embed_repository_handler(
     4. Upsert to Pinecone
     """
     try:
-        if not pinecone_service:
-            return ToolResult(
-                success=False,
-                error="Pinecone service not initialized"
-            )
+
         
         # Check if Pinecone is actually available
         try:
+            if not pinecone_service:
+                return ToolResult(
+                    success=False,
+                    error="Pinecone service not initialized"
+                )
             if not hasattr(pinecone_service, 'index') or pinecone_service.index is None:
                 logger.warning("Pinecone index not available")
                 return ToolResult(
@@ -177,36 +178,62 @@ async def semantic_search_handler(
             )
         
         # Format initial chunks with original scores
-        # Format initial chunks with original scores
         chunks = []
         for c in search_results:
             try:
-                file_path = c.get("file") or "unknown"
-                lines_str = c.get("lines") or "0-0"
+                # Extract metadata from nested structure
+                metadata = c.get("metadata", {})
+
+                # Get file info from metadata
+                file_path = metadata.get("file_path") or metadata.get("file") or "unknown"
+                file_name = metadata.get("file_name") or (file_path.split("/")[-1] if file_path != "unknown" else "unknown")
+
+                # Get line numbers from metadata
+                start_line = metadata.get("start_line", 0)
+                end_line = metadata.get("end_line", 0)
+                lines_str = f"{start_line}-{end_line}" if (start_line or end_line) else "0-0"
+                # Get relevance score (from top-level 'score' key, not metadata)
+                original_relevance = c.get("score", 0)
+                original_relevance = float(original_relevance) if original_relevance else 0.0
+
+                # Get other metadata
+                language = metadata.get("language", "python")
+                preview = metadata.get("content_preview", "")[:300]
+                chunk_content = metadata.get("content") or preview
                 
-                # Split file path safely
-                file_name = file_path.split("/")[-1] if file_path else "unknown"
-                
-                # Split lines safely
-                lines_parts = lines_str.split("-")
-                start_line = int(lines_parts[0]) if len(lines_parts) > 0 else 0
-                end_line = int(lines_parts[1]) if len(lines_parts) > 1 else 0
-                
+                # Get original relevance score as DECIMAL (0-1)
+                original_relevance = c.get("relevance_score") or c.get("relevance") or c.get("score", 0)
+                original_relevance = float(original_relevance) if original_relevance else 0.0
+
+                # Parse lines if string format
+                if isinstance(lines_str, str) and "-" in lines_str:
+                    try:
+                        lines_parts = lines_str.split("-")
+                        start_line = int(lines_parts[0]) if len(lines_parts) > 0 else 0
+                        end_line = int(lines_parts[1]) if len(lines_parts) > 1 else 0
+                    except (ValueError, IndexError):
+                        pass
+
+                # Create chunk ONCE with decimal scores (0-1 range)
                 chunk = {
-                    "chunk_id": c.get("chunk_id"),
+                    "chunk_id": c.get("id", ""),  # Use 'id' not 'chunk_id'
                     "file_path": file_path,
                     "file_name": file_name,
                     "start_line": start_line,
                     "end_line": end_line,
-                    "language": c.get("language", "python"),
-                    "preview": c.get("preview", ""),
-                    "original_score": round(c.get("relevance", 0), 3),
-                    "relevance_score": round(c.get("relevance", 0), 3),
-                    "confidence": round(c.get("relevance", 0), 3),
+                    "language": language,
+                    "preview": preview,
+                    "content": chunk_content,
+                    "original_score": round(original_relevance, 3),
+                    "relevance_score": round(original_relevance, 3),
+                    "confidence": round(original_relevance, 3),
                     "lines": lines_str,
                     "reranked": False
                 }
                 chunks.append(chunk)
+                logger.info(f"   ✅ Chunk: {file_name} (Lines {start_line}-{end_line}, Relevance: {chunk['original_score']:.1%})")
+                logger.info(f"   🔍 DEBUG - Raw chunk keys: {list(c.keys())}")
+                logger.info(f"   🔍 DEBUG - Raw chunk: {c}")
             except Exception as chunk_err:
                 logger.warning(f"⚠️ Skipping malformed chunk: {chunk_err}")
                 continue
@@ -301,7 +328,7 @@ async def semantic_search_handler(
     except Exception as e:
         logger.error(f"❌ Search failed: {e}")
         return ToolResult(success=False, error=str(e))
-
+        
 async def get_embeddings_stats_handler(
     repo_id: str,
     pinecone_service: PineconeEmbeddingsService

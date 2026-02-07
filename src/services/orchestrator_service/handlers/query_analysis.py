@@ -41,12 +41,13 @@ INTENT TYPES:
 - "search": Find code entity (e.g., "What is FastAPI?", "Find Depends")
 - "explain": Explain entity behavior (e.g., "How does validation work?")
 - "analyze": Deep code analysis (e.g., "Analyze FastAPI class structure")
-- "index": Index repository (e.g., "Index https://github.com/...")
+- "index": Index repository to Neo4j (e.g., "Index https://github.com/...")
+- "embed": Embed repository to Pinecone (e.g., "Embed https://github.com/...")
 - "stats": Get codebase stats
 
 Return ONLY valid JSON (no markdown, no extra text):
 {
-    "intent": "search|explain|analyze|index|stats",
+    "intent": "search|explain|analyze|index|embed|stats",
     "entities": ["RealClassName", "real_function_name"],
     "repo_url": "https://..." or null,
     "confidence": 0.0-1.0
@@ -59,6 +60,7 @@ Examples:
 - "Explain Dependant class" → {"intent": "explain", "entities": ["Dependant"], "confidence": 0.9}
 - "MATCH (e) WHERE..." → {"intent": "search", "entities": [], "confidence": 0.7}
 - "Index https://github.com/tiangolo/fastapi" → {"intent": "index", "entities": [], "repo_url": "https://github.com/tiangolo/fastapi", "confidence": 0.95}
+- "Embed https://github.com/tiangolo/fastapi" → {"intent": "embed", "entities": [], "repo_url": "https://github.com/tiangolo/fastapi", "confidence": 0.95}
 """
         },
                 {"role": "user", "content": query}

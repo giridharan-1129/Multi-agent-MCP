@@ -23,32 +23,33 @@ def _infer_source_type(rel_type: str, source_name: str) -> str:
     """Infer source node type from relationship type."""
     mapping = {
         "INHERITS_FROM": "Class",
-        "CONTAINS": "Class",  # Class contains Method
+        "CONTAINS": "Module",  # ← ADD THIS
         "DECORATED_BY": "Function",
         "CALLS": "Function",
-        "HAS_PARAM": "Function",
+        "HAS_PARAMETER": "Function",  # ← FIX: was "HAS_PARAM"
         "RETURNS": "Function",
         "HAS_METHOD": "Class",
-        "IMPORTS": "Package",
+        "IMPORTS": "File",  # ← FIX: was "Package"
         "DEFINES": "File",
         "DOCUMENTED_BY": "Function",
+        "DEPENDS_ON": "Class",  # ← ADD THIS
     }
     return mapping.get(rel_type, "Unknown")
-
 
 def _infer_target_type(rel_type: str, target_name: str) -> str:
     """Infer target node type from relationship type."""
     mapping = {
         "INHERITS_FROM": "Class",
-        "CONTAINS": "Method",  # Class contains Method
+        "CONTAINS": "Class",  # ← ADD THIS
         "DECORATED_BY": "Function",
         "CALLS": "Function",
-        "HAS_PARAM": "Parameter",
+        "HAS_PARAMETER": "Parameter",  # ← FIX: was "HAS_PARAM"
         "RETURNS": "Type",
         "HAS_METHOD": "Method",
-        "IMPORTS": "Package",
-        "DEFINES": "Class",  # or Function
+        "IMPORTS": "Module",  # ← FIX: was "Package"
+        "DEFINES": "Class",
         "DOCUMENTED_BY": "Docstring",
+        "DEPENDS_ON": "Class",  # ← ADD THIS
     }
     return mapping.get(rel_type, "Unknown")
 
@@ -127,6 +128,36 @@ async def index_repository_handler(
                                 line_number=entity.get("line_number"),
                                 is_async=entity.get("is_async", False)
                             )
+
+                        elif entity_type == "Module":
+                            await neo4j_service.create_module_node(
+                                name=entity["name"],
+                                file_path=entity.get("file_path"),
+                                package=entity.get("package")
+                            )
+                        elif entity_type == "Decorator":
+                            await neo4j_service.create_decorator_node(
+                                name=entity["name"],
+                                module=entity.get("module"),
+                                decorates=entity.get("decorates")
+                            )
+
+                        elif entity_type == "Import":
+                            # Create import node first
+                            await neo4j_service.create_import_node(
+                                name=entity["name"],
+                                module_name=entity["module_name"],
+                                module=entity.get("module"),
+                                line_number=entity.get("line_number")
+                            )
+                            # Also create IMPORTS relationship
+                            await neo4j_service.create_relationship(
+                                source_name=entity.get("module"),
+                                source_label="File",
+                                target_name=entity["module_name"],
+                                target_label="Module",
+                                rel_type="IMPORTS"
+                            ) 
                         elif entity_type == "Method":
                             await neo4j_service.create_method_node(
                                 name=entity["name"],
@@ -140,6 +171,10 @@ async def index_repository_handler(
                                 name=entity["name"],
                                 param_name=entity.get("param_name"),
                                 module=entity.get("module", "")
+                            )
+                        elif entity_type == "File":
+                            await neo4j_service.create_file_node(
+                                path=entity["name"]
                             )
                         elif entity_type == "Type":
                             await neo4j_service.create_type_node(entity["name"])

@@ -49,6 +49,7 @@ async def execute_query(
         
         previous_context = ""
         try:
+            
             # Call memory service to get chat history
             memory_result = await call_agent_tool(
                 agent="memory",
@@ -132,11 +133,12 @@ async def execute_query(
         
         agent_names = routing.data.get("recommended_agents", ["graph_query"])
         parallel = routing.data.get("parallel", False)
+        intent = routing.data.get("intent", intent)  # ← ADD THIS LINE to update intent from routing
         
         logger.info(f"Agents to call: {agent_names}")
         logger.info(f"Mode: {'Parallel' if parallel else 'Sequential'}")
         
-        # ====================================================================
+                # ====================================================================
         # STEP 3: CALL AGENTS IN PARALLEL
         # ====================================================================
         import asyncio
@@ -146,7 +148,8 @@ async def execute_query(
         
         # Check if we have graph_query + other agents for parallel execution
         # ALWAYS do parallel search for search/explain intents (Neo4j + Pinecone in parallel)
-        if intent in ["search", "explain", "analyze"] and "graph_query" in agent_names:
+        # SKIP parallel search for admin operations
+        if intent in ["search", "explain", "analyze"] and "graph_query" in agent_names and intent != "admin":
             logger.info("   🔄 Parallel search scenario: Neo4j + Pinecone")
             
             # Execute parallel entity + semantic search first
@@ -217,6 +220,52 @@ async def execute_query(
                 logger.info(f"      Tool: {tool_name}")
                 logger.info(f"      Input: {tool_input}")
                 
+                # Special handling for admin operations (clear/delete)
+                if tool_name == "admin_clear":
+                    logger.info("   🔴 ADMIN OPERATION: Clearing all indexes")
+                    
+                    # Call both clear tools sequentially
+                    results = []
+                    
+                    # 1. Clear Neo4j
+                    logger.info("      [1/2] Calling clear_index...")
+                    clear_neo4j = await call_agent_tool(
+                        agent=agent_name,
+                        tool="clear_index",
+                        input_params={},
+                        http_client=http_client,
+                        agent_urls=agent_urls
+                    )
+                    results.append(("clear_index", clear_neo4j))
+                    logger.info(f"      ✅ Neo4j cleared: {clear_neo4j.success}")
+                    
+                    # 2. Clear Pinecone
+                    logger.info("      [2/2] Calling clear_embeddings...")
+                    clear_pinecone = await call_agent_tool(
+                        agent=agent_name,
+                        tool="clear_embeddings",
+                        input_params={"repo_id": "all"},
+                        http_client=http_client,
+                        agent_urls=agent_urls
+                    )
+                    results.append(("clear_embeddings", clear_pinecone))
+                    logger.info(f"      ✅ Pinecone cleared: {clear_pinecone.success}")
+                    
+                    # Store combined result
+                    agent_results.append({
+                        "agent": agent_name,
+                        "tool": "admin_clear",
+                        "success": all(r[1].success for r in results),
+                        "data": {
+                            "clear_index": results[0][1].data if results[0][1].success else None,
+                            "clear_embeddings": results[1][1].data if results[1][1].success else None,
+                            "message": "Both Neo4j and Pinecone have been cleared"
+                        },
+                        "error": None
+                    })
+                    continue  # Skip normal tool call
+                
+                # Normal tool execution
                 agent_call = await call_agent_tool(
                     agent=agent_name,
                     tool=tool_name,
@@ -363,10 +412,44 @@ def _select_tool_for_agent(
                     "branch": "main"
                 }
             )
+        elif intent == "admin":
+            # Admin queries: clear database and embeddings
+            # Return special marker for orchestration to call both tools
+            return (
+                "admin_clear",  # Special tool name
+                {
+                    "action": "clear_all",
+                    "repo_id": "all"
+                }
+            )
         else:
             return ("get_index_status", {})
     
     elif agent_name == "graph_query":
+        # Check for admin operations first
+        if intent == "admin":
+            return (
+                "admin_clear",
+                {
+                    "action": "clear_all",
+                    "repo_id": "all"
+                }
+            )
+        # For index/embed, skip graph_query (only call indexer)
+        # This is handled by routing, so we shouldn't reach here
+        # But if we do, return a safe default
+        if intent in ["index", "embed"]:
+            logger.warning(f"⚠️ graph_query called for {intent} intent - should not happen. Routing error.")
+            return (
+                "find_entity",
+                {"name": entity_name}
+            )
+        # For analyze intent, get both entity info AND relationships
+        if intent == "analyze":
+            return (
+                "find_entity_relationships",
+                {"entity_name": entity_name}
+            )
         return (
             "find_entity",
             {"name": entity_name}

@@ -274,7 +274,61 @@ class Neo4jService:
 
         await run_in_threadpool(_run)
 
+    async def create_decorator_node(self, name: str, module: str, decorates: str = None):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (d:Decorator {name: $name})
+                    SET d.module = $module,
+                        d.decorates = $decorates
+                    """,
+                    {
+                        "name": name,
+                        "module": module,
+                        "decorates": decorates,
+                    },
+                )
 
+        await run_in_threadpool(_run)
+
+    async def create_import_node(self, name: str, module_name: str, module: str, line_number: int = None):
+            def _run():
+                with self.driver.session(database=self.database) as session:
+                    session.run(
+                        """
+                        MERGE (i:Import {name: $name})
+                        SET i.module_name = $module_name,
+                            i.module = $module,
+                            i.line_number = $line_number
+                        """,
+                        {
+                            "name": name,
+                            "module_name": module_name,
+                            "module": module,
+                            "line_number": line_number,
+                        },
+                    )
+
+            await run_in_threadpool(_run)
+
+    async def create_module_node(self, name: str, file_path: str, package: str = None):
+        def _run():
+            with self.driver.session(database=self.database) as session:
+                session.run(
+                    """
+                    MERGE (m:Module {name: $name})
+                    SET m.file_path = $file_path,
+                        m.package = $package
+                    """,
+                    {
+                        "name": name,
+                        "file_path": file_path,
+                        "package": package,
+                    },
+                )
+
+        await run_in_threadpool(_run)
 
     async def create_defines_relationship(
         self,
